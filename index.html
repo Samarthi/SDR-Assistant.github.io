@@ -3,14 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>NarrativeTailor (Web)</title>
+    <title>AI SDR Assistant</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+    />
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
     <div id="app">
       <div id="topBar">
         <button id="exportTrigger" type="button" class="primary">Export</button>
-        <h2>NarrativeTailor (GenAI)</h2>
+        <h2>AI SDR Assistant</h2>
       </div>
       <div id="modeSwitcher" role="tablist" aria-label="Generation mode">
         <button type="button" class="mode-tab active" role="tab" aria-selected="true" data-mode-tab="targetedBrief">
@@ -120,7 +124,7 @@
                 <div class="target-sectors-field">
                   <div id="targetSectorsChips" class="target-sectors-chips" aria-live="polite" aria-label="Selected target sectors"></div>
                   <input id="targetSectorsInput" name="targetSectorsInput" type="text" placeholder="e.g., FinTech, Healthcare" autocomplete="off" />
-                  <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with A-.</p>
+                  <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with -.</p>
                 </div>
                 <label for="targetLocation">Location</label>
                 <input id="targetLocation" name="targetLocation" type="text" placeholder="e.g., Singapore" />
@@ -147,7 +151,7 @@
       <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="modal-header">
           <h3 id="modalTitle"></h3>
-          <button id="modalClose" type="button" aria-label="Close modal">A-</button>
+          <button id="modalClose" type="button" aria-label="Close modal">-</button>
         </div>
         <div id="modalBody" class="modal-body"></div>
         <div id="modalFooter" class="modal-footer"></div>

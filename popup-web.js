@@ -298,7 +298,7 @@ function renderDocChips(mode) {
     removeBtn.className = 'doc-chip-remove';
     removeBtn.dataset.removeDocId = String(id);
     removeBtn.setAttribute('aria-label', `Remove ${name}`);
-    removeBtn.textContent = 'A-';
+    removeBtn.textContent = '-';
     chip.appendChild(removeBtn);
 
     container.appendChild(chip);

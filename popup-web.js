@@ -36,6 +36,11 @@ const targetHistoryList = document.getElementById('targetHistoryList');
 const targetHistoryEmpty = document.getElementById('targetHistoryEmpty');
 const exportTrigger = document.getElementById('exportTrigger');
 const settingsTrigger = document.getElementById('settingsTrigger');
+const heroBriefBtn = document.getElementById('heroBriefBtn');
+const heroTargetsBtn = document.getElementById('heroTargetsBtn');
+const heroDocsBtn = document.getElementById('heroDocsBtn');
+const heroExportBtn = document.getElementById('heroExportBtn');
+const heroSettingsBtn = document.getElementById('heroSettingsBtn');
 const modalRoot = document.getElementById('modalRoot');
 const modalTitle = document.getElementById('modalTitle');
 const modalBody = document.getElementById('modalBody');
@@ -62,6 +67,7 @@ const targetProductInput = document.getElementById('targetProduct');
 const targetDocInput = document.getElementById('targetDocInput');
 const targetSectorsInput = document.getElementById('targetSectorsInput');
 const targetSectorsChips = document.getElementById('targetSectorsChips');
+const briefFormPane = document.getElementById('formPane');
 const targetLocationInput = document.getElementById('targetLocation');
 const targetStatusEl = document.getElementById('targetStatus');
 const targetResultsSection = document.getElementById('targetResults');
@@ -116,6 +122,7 @@ let storedDocs = [];
 let activeBriefData = null;
 let revisionModalState = null;
 const docLabelCache = new Map();
+let hasLaunchedSettingsOnboarding = false;
 const selectedDocsByMode = {
   [Mode.TARGETED_BRIEF]: [],
   [Mode.TARGET_GENERATION]: [],
@@ -260,6 +267,69 @@ function setActiveMode(mode) {
       section.setAttribute('aria-hidden', 'true');
     }
   });
+}
+
+function scrollToElementSmooth(el) {
+  if (!el || typeof el.scrollIntoView !== 'function') return;
+  window.requestAnimationFrame(() => {
+    try {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      el.scrollIntoView();
+    }
+  });
+}
+
+function focusMode(mode, targetEl) {
+  setActiveMode(mode);
+  if (targetEl) {
+    scrollToElementSmooth(targetEl);
+  }
+}
+
+function normalizeModeFromString(str = '') {
+  const v = str.toLowerCase();
+  if (v.includes('target') && v.includes('brief')) return Mode.TARGETED_BRIEF;
+  if (v === 'brief') return Mode.TARGETED_BRIEF;
+  if (v === 'targets' || v === 'targetgeneration' || v === 'target_generation') return Mode.TARGET_GENERATION;
+  if (v.includes('target') && v.includes('gen')) return Mode.TARGET_GENERATION;
+  return null;
+}
+
+function getInitialModeFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const qsMode = normalizeModeFromString(url.searchParams.get('mode') || '');
+    if (qsMode) return qsMode;
+    const hashMode = normalizeModeFromString((url.hash || '').replace('#', ''));
+    if (hashMode) return hashMode;
+  } catch (err) {
+    // ignore parse errors
+  }
+  return null;
+}
+
+function getOnboardingTargetFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    const onboarding = (url.searchParams.get('onboarding') || '').toLowerCase();
+    if (onboarding === 'settings') return 'settings';
+  } catch (err) {
+    // ignore parse errors
+  }
+  return null;
+}
+
+function clearOnboardingFlagFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('onboarding')) return;
+    url.searchParams.delete('onboarding');
+    const nextUrl = url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : '') + url.hash;
+    window.history.replaceState({}, document.title, nextUrl);
+  } catch (err) {
+    // ignore parse errors
+  }
 }
 
 function sendMessagePromise(payload) {
@@ -998,9 +1068,55 @@ if (modeTabList.length) {
     });
   });
   const initialTab = modeTabList.find((tab) => tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true');
-  const initialMode = initialTab?.dataset.modeTab || Mode.TARGETED_BRIEF;
+  const urlPreferredMode = getInitialModeFromUrl();
+  const initialMode = urlPreferredMode || initialTab?.dataset.modeTab || Mode.TARGETED_BRIEF;
   setActiveMode(initialMode);
 }
+
+const onboardingTarget = getOnboardingTargetFromUrl();
+const launchSettingsOnboarding = () => {
+  if (hasLaunchedSettingsOnboarding) return;
+  hasLaunchedSettingsOnboarding = true;
+  openSettingsModal({
+    onSave: () => {
+      clearOnboardingFlagFromUrl();
+      focusMode(Mode.TARGETED_BRIEF, briefFormPane);
+    },
+  });
+};
+if (onboardingTarget === 'settings') {
+  launchSettingsOnboarding();
+} else {
+  geminiKeyLoadPromise.then((storedKey) => {
+    if (!storedKey) {
+      launchSettingsOnboarding();
+    }
+  }).catch(() => {
+    // even if storage read fails, try to open settings once to unblock the user
+    launchSettingsOnboarding();
+  });
+}
+
+heroBriefBtn?.addEventListener('click', () => {
+  focusMode(Mode.TARGETED_BRIEF, briefFormPane);
+});
+
+heroTargetsBtn?.addEventListener('click', () => {
+  focusMode(Mode.TARGET_GENERATION, targetForm);
+});
+
+heroDocsBtn?.addEventListener('click', () => {
+  const mode = activeMode || Mode.TARGETED_BRIEF;
+  openDocPickerModal(mode);
+});
+
+heroExportBtn?.addEventListener('click', () => {
+  exportTrigger?.click();
+});
+
+heroSettingsBtn?.addEventListener('click', () => {
+  settingsTrigger?.click();
+});
 
 saveKeyBtn?.addEventListener('click', async () => {
   const key = apiKeyInput.value.trim();
@@ -1529,11 +1645,18 @@ document.addEventListener('keydown', (evt) => {
   }
 });
 
-  settingsTrigger?.addEventListener('click', () => {
-    Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, geminiKeyLoadPromise]).finally(() => {
-      openModal({ title: 'Settings', render: renderSettingsModal });
+function openSettingsModal(options = {}) {
+  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, geminiKeyLoadPromise]).finally(() => {
+    openModal({
+      title: 'Settings',
+      render: (ctx) => renderSettingsModal(ctx, options),
     });
   });
+}
+
+settingsTrigger?.addEventListener('click', () => {
+  openSettingsModal();
+});
 
 exportTrigger?.addEventListener('click', async () => {
   await loadExportTemplateFromStorage();
@@ -2037,7 +2160,7 @@ function triggerDownload(downloadInfo) {
   }
 }
 
-function renderSettingsModal({ body, footer, close }) {
+function renderSettingsModal({ body, footer, close }, options = {}) {
   if (!body || !footer) return;
 
   const form = document.createElement('form');
@@ -2115,12 +2238,43 @@ function renderSettingsModal({ body, footer, close }) {
   apiHelper.className = 'modal-helper';
   apiHelper.textContent = 'Provide your Gemini API key. This is required for AI powered exports and brief generation.';
   apiSection.appendChild(apiHelper);
+  const apiInfoBlock = document.createElement('p');
+  apiInfoBlock.className = 'modal-helper';
+  apiInfoBlock.appendChild(document.createTextNode('Need a key? '));
+  const apiLink = document.createElement('a');
+  apiLink.href = 'https://aistudio.google.com/api-keys';
+  apiLink.target = '_blank';
+  apiLink.rel = 'noopener noreferrer';
+  apiLink.textContent = 'Create one in Google AI Studio';
+  apiInfoBlock.appendChild(apiLink);
+  apiInfoBlock.appendChild(document.createTextNode('. Create a project, add an API key under that project, then copy the key and paste it here.'));
+  apiSection.appendChild(apiInfoBlock);
+  const apiInputWrapper = document.createElement('div');
+  apiInputWrapper.className = 'input-with-toggle';
   const apiInputField = document.createElement('input');
-  apiInputField.type = 'text';
+  apiInputField.type = 'password';
   apiInputField.placeholder = 'Gemini API key';
-    // Pre-fill with cached key or stored value if available.
-    apiInputField.value = (apiKeyInput?.value?.trim() || cachedGeminiKey || '').trim();
-  apiSection.appendChild(apiInputField);
+  // Pre-fill with cached key or stored value if available.
+  apiInputField.value = (apiKeyInput?.value?.trim() || cachedGeminiKey || '').trim();
+  const apiVisibilityToggle = document.createElement('button');
+  apiVisibilityToggle.type = 'button';
+  apiVisibilityToggle.className = 'input-toggle';
+  apiVisibilityToggle.setAttribute('aria-label', 'Show API key');
+  const eyeIcon = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z\"></path><circle cx=\"12\" cy=\"12\" r=\"3\"></circle></svg>';
+  const eyeOffIcon = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.5 21.5 0 0 1 5.06-5.94\"></path><path d=\"M1 1l22 22\"></path><path d=\"M9.53 9.53a3 3 0 0 0 4.24 4.24\"></path><path d=\"M14.47 14.47 9.53 9.53\"></path></svg>';
+  const updateApiVisibilityIcon = (isVisible) => {
+    apiVisibilityToggle.innerHTML = isVisible ? eyeIcon : eyeOffIcon;
+    apiVisibilityToggle.setAttribute('aria-label', isVisible ? 'Hide API key' : 'Show API key');
+  };
+  updateApiVisibilityIcon(false);
+  apiVisibilityToggle.addEventListener('click', () => {
+    const isHidden = apiInputField.type === 'password';
+    apiInputField.type = isHidden ? 'text' : 'password';
+    updateApiVisibilityIcon(isHidden);
+  });
+  apiInputWrapper.appendChild(apiInputField);
+  apiInputWrapper.appendChild(apiVisibilityToggle);
+  apiSection.appendChild(apiInputWrapper);
   form.appendChild(apiSection);
 
   body.appendChild(form);
@@ -2168,6 +2322,13 @@ function renderSettingsModal({ body, footer, close }) {
         status.style.color = '';
       }
       close();
+      if (typeof options.onSave === 'function') {
+        try {
+          options.onSave({ geminiKey: key, theme: selectedTheme, pitchingCompany });
+        } catch (err) {
+          console.warn('onSave handler failed', err);
+        }
+      }
     } catch (err) {
       errorEl.textContent = err?.message || 'Failed to save settings.';
       errorEl.style.display = 'block';
@@ -4669,5 +4830,3 @@ targetHistoryList?.addEventListener('click', (evt) => {
 });
 
 loadTargetHistory({ selectLatest: true, autoShow: true, statusText: '' });
-
-

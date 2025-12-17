@@ -9,175 +9,246 @@
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
     />
     <link rel="stylesheet" href="app.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      .lp-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px 18px 48px;
+      }
+      .lp-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .lp-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .lp-brand {
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        font-size: 22px;
+      }
+      .theme-toggle {
+        border-radius: 999px;
+        padding: 8px 12px;
+        border: 1px solid var(--color-border);
+        background: var(--color-surface);
+        color: var(--color-text);
+        box-shadow: var(--shadow-soft);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .theme-toggle:hover,
+      .theme-toggle:focus-visible {
+        background: var(--color-surface-alt);
+        border-color: var(--color-border-strong);
+      }
+      .lp-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .hero__cta-spot {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        margin: 14px 0 26px;
+        text-align: center;
+      }
+      .primary.primary-large {
+        font-size: 18px;
+        padding: 14px 28px;
+        border-radius: 14px;
+        min-width: 240px;
+        text-align: center;
+      }
+      .hero__cta-helper {
+        margin: 0;
+        color: var(--color-text-muted);
+        font-size: 14px;
+      }
+      .lp-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 16px;
+      }
+      .lp-card {
+        padding: 16px;
+        border-radius: 14px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        box-shadow: var(--shadow-soft);
+      }
+      .lp-card h3 {
+        margin: 0 0 8px;
+      }
+      .lp-card ul {
+        margin: 0;
+        padding-left: 16px;
+        color: var(--color-text-muted);
+        line-height: 1.5;
+      }
+      @media (max-width: 720px) {
+        .lp-topbar {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 10px;
+        }
+        .lp-brand {
+          font-size: 20px;
+        }
+      }
+      .hero__brand h1 {
+        font-size: 32px;
+      }
+      @media (max-width: 900px) {
+        .hero__brand h1 {
+          font-size: 28px;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="app">
-      <div id="topBar">
-        <button id="exportTrigger" type="button" class="primary">Export</button>
-        <h2>AI SDR Assistant</h2>
-      </div>
-      <div id="modeSwitcher" role="tablist" aria-label="Generation mode">
-        <button type="button" class="mode-tab active" role="tab" aria-selected="true" data-mode-tab="targetedBrief">
-          Targeted Brief Generation
-        </button>
-        <button type="button" class="mode-tab" role="tab" aria-selected="false" data-mode-tab="targetGeneration">
-          Target Generation
-        </button>
-      </div>
-      <div id="appLayout">
-        <aside id="historySidebar">
-          <div class="history-section" data-history-section="targetedBrief">
-            <h3>Research History</h3>
-            <button id="newResearch" type="button">New Research</button>
-            <div id="historyEmpty">No history yet. Run a brief to see it here.</div>
-            <div id="historyList" role="list"></div>
+    <div class="lp-container">
+      <div class="lp-shell">
+        <div class="lp-topbar">
+          <div class="lp-brand">AI SDR Assistant</div>
+          <div class="lp-actions">
+            <button id="navThemeToggle" type="button" class="theme-toggle" aria-pressed="false">Dark mode</button>
           </div>
-          <div class="history-section" data-history-section="targetGeneration" hidden>
-            <h3>Target History</h3>
-            <button id="newTargetResearch" type="button">New Research</button>
-            <div id="targetHistoryEmpty" class="history-empty-placeholder">No targets yet. Generate one to see it here.</div>
-            <div id="targetHistoryList" role="list"></div>
-          </div>
-        </aside>
-        <div id="mainPane">
-          <div class="mode-view" data-mode-view="targetedBrief">
-            <div id="formPane">
-              <label>Company</label><input id="company" placeholder="e.g., Infosys" />
-              <label>Location</label><input id="location" placeholder="e.g., India" />
-              <label>Product</label><input id="product" placeholder="e.g., Cloud Security" />
-              <label>Upload Docs (PDF/TXT)</label><input id="fileInput" type="file" multiple />
-              <div class="doc-selector">
-                <button id="briefDocPicker" type="button" class="ghost">Add documents</button>
-                <div id="briefDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for brief"></div>
-              </div>
+        </div>
 
-              <div class="actions">
-                <button id="generate">Generate Brief</button>
-                <button id="viewDocs">View Docs</button>
-              </div>
-              <div id="status"></div>
+        <section class="hero">
+          <div class="hero__top">
+            <div class="hero__brand">
+              <p class="hero__eyebrow">AI SDR Assistant</p>
+              <h1>Research in minutes. Send outreach that feels genuinely personal.</h1>
+              <p class="hero__subhead">
+                Create crisp company briefs, buyer personas, human-sounding emails, and call scripts &mdash; or instantly build a list of up to <strong>100 target accounts</strong> by product, location, and industry.
+              </p>
             </div>
-            <div id="resultWrapper">
-              <div id="result" style="display:none">
-                <h3>Results</h3>
-                <div id="brief">
-                  <div id="briefSummarySection" class="brief-summary">
-                    <div class="summary-grid">
-                      <div class="summary-item">
-                        <div class="summary-label">Headquarters</div>
-                        <div id="briefHqValue" class="summary-value">Headquarters not generated yet.</div>
-                      </div>
-                      <div class="summary-item">
-                        <div class="summary-label">Revenue</div>
-                        <div id="briefRevenueValue" class="summary-value">Revenue not generated yet.</div>
-                      </div>
-                      <div class="summary-item">
-                        <div class="summary-label">Industry Sector</div>
-                        <div id="briefIndustryValue" class="summary-value">Industry sector not generated yet.</div>
-                      </div>
-                    </div>
-                    <div class="top-news-section">
-                      <div class="top-news-header">
-                        <h4>Top News</h4>
-                        <span id="topNewsHint" class="section-hint"></span>
-                      </div>
-                      <ul id="topNewsList" class="top-news-list">
-                        <li>Top news not generated yet.</li>
-                      </ul>
-                    </div>
-                  </div>
-                  <div id="legacyBriefContainer" class="legacy-brief" hidden></div>
-                </div>
-                <h4>Personas</h4><div id="personas"></div>
-                <div id="emailSection">
-                  <div class="emailHeader">
-                    <div class="emailHeaderLeft">
-                      <h4>Generated Emails</h4>
-                    </div>
-                  </div>
-                  <div id="personaTabs" role="tablist" aria-label="Persona email drafts"></div>
-                  <div class="copyActionRow">
-                    <button id="copyEmail" type="button">Copy Email</button>
-                  </div>
-                  <div id="emailOut" class="outputBox richText" aria-live="polite"></div>
-                  <div id="emailVersionControls" class="versionControls versionControls-inline" aria-live="polite"></div>
-                  <div class="revisionActionRow">
-                    <button id="reviseEmailPersona" type="button" class="ghost">Rewrite this email</button>
-                    <button id="reviseEmailAll" type="button" class="ghost">Rewrite all emails</button>
-                  </div>
-                  <div id="telePitchSection">
-                    <div class="telePitchHeader">
-                      <div class="telePitchHeaderLeft">
-                        <h4>Telephonic Pitch</h4>
-                      </div>
-                      <div class="telePitchActions">
-                        <span class="telePitchHint">Updates with persona selection.</span>
-                      </div>
-                    </div>
-                    <div id="telePersonaTabs" role="tablist" aria-label="Persona telephonic pitch drafts"></div>
-                    <pre id="telePitchOut" class="outputBox">No telephonic pitch generated yet.</pre>
-                    <div id="pitchVersionControls" class="versionControls versionControls-inline" aria-live="polite"></div>
-                    <div class="revisionActionRow">
-                      <button id="revisePitchPersona" type="button" class="ghost">Rewrite this pitch</button>
-                      <button id="revisePitchAll" type="button" class="ghost">Rewrite all pitches</button>
-                    </div>
-                  </div>
-                </div>
+          </div>
+          <div class="hero__cta-spot">
+            <a class="primary primary-large" href="app.html?onboarding=settings">Get started</a>
+            <p class="hero__cta-helper">Add your Gemini API key to start generating briefs and target lists.</p>
+          </div>
+          <div class="hero__modes">
+            <div class="hero__card">
+              <div class="hero__card-header">
+                <span class="badge">Targeted Brief Generation</span>
+              </div>
+              <div class="hero__card-body">
+                <ul>
+                  <li><strong>You provide:</strong> Company &bull; Location &bull; Product &bull; Docs</li>
+                  <li><strong>You get:</strong> HQ &bull; Revenue &bull; Sector &bull; Top news</li>
+                  <li>Company overview: HQ, revenue, sector, and top news</li>
+                  <li>Buyer personas + email drafts (in tabs) with <strong>Rewrite</strong> to iterate</li>
+                  <li>Telephonic pitch scripts (in tabs) with <strong>Rewrite</strong> to refine fast</li>
+                </ul>
+              </div>
+            </div>
+            <div class="hero__card">
+              <div class="hero__card-header">
+                <span class="badge badge-alt">Target Generation</span>
+              </div>
+              <div class="hero__card-body">
+                <ul>
+                  <li><strong>You provide:</strong> Product &bull; Location &bull; Target sectors &bull; Docs</li>
+                  <li><strong>You get:</strong> Up to <strong>100 companies</strong></li>
+                  <li>Company name, website, revenue, and fit notes</li>
+                  <li>Copy-ready results you can share instantly</li>
+                </ul>
               </div>
             </div>
           </div>
-          <div class="mode-view" data-mode-view="targetGeneration" hidden>
-            <div class="target-section">
-              <h3>Target Generation</h3>
-              <p>Provide product context to research target companies in a specific location.</p>
-              <form id="targetForm" class="target-form">
-                <label for="targetProduct">Product Name</label>
-                <input id="targetProduct" name="targetProduct" type="text" placeholder="e.g., Cloud Security Platform" autocomplete="off" />
-                <label for="targetDocInput">Product Document Upload</label>
-                <input id="targetDocInput" name="targetDocInput" type="file" accept=".txt,.pdf,.doc,.docx,.md,.html" />
-                <div class="doc-selector">
-                  <button id="targetDocPicker" type="button" class="ghost">Add documents</button>
-                  <div id="targetDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for targets"></div>
-                </div>
-                <label for="targetSectorsInput">Target Sectors of the Product</label>
-                <div class="target-sectors-field">
-                  <div id="targetSectorsChips" class="target-sectors-chips" aria-live="polite" aria-label="Selected target sectors"></div>
-                  <input id="targetSectorsInput" name="targetSectorsInput" type="text" placeholder="e.g., FinTech, Healthcare" autocomplete="off" />
-                  <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with -.</p>
-                </div>
-                <label for="targetLocation">Location</label>
-                <input id="targetLocation" name="targetLocation" type="text" placeholder="e.g., Singapore" />
-                <button id="generateTargets" type="submit" class="primary">Generate Targets</button>
-              </form>
-              <div id="targetStatus" class="target-status" role="status" aria-live="polite"></div>
-              <div id="targetResults" class="target-results" hidden>
-                <div class="target-results-header">
-                  <h4>Suggested Companies</h4>
-                  <button id="copyTargets" type="button" class="ghost">Copy Results</button>
-                </div>
-                <div class="target-results-scroll">
-                  <ul id="targetResultsList" class="target-results-list"></ul>
-                </div>
-              </div>
-            </div>
+        </section>
+
+        <div class="lp-grid">
+          <div class="lp-card">
+            <h3>What you get</h3>
+            <ul>
+              <li>A clean company brief: HQ, revenue, sector, and top news</li>
+              <li>Personas paired with email drafts and telephonic pitches</li>
+              <li><strong>Rewrite buttons</strong> to generate variations and improve tone quickly</li>
+              <li>Export to <strong>XLSX</strong> or <strong>Markdown</strong> using templates</li>
+            </ul>
+          </div>
+          <div class="lp-card">
+            <h3>How it works</h3>
+            <ul>
+              <li>Upload docs once and re-use them anytime via the doc picker</li>
+              <li>Switch modes: <strong>Targeted Brief</strong> or <strong>Target Generation</strong></li>
+              <li>Use the history sidebar to revisit and reuse past runs</li>
+              <li>Manage your Gemini key and theme in Settings</li>
+            </ul>
           </div>
         </div>
       </div>
     </div>
-    <button id="settingsTrigger" type="button">Settings</button>
-    <div id="modalRoot" class="hidden" aria-hidden="true">
-      <div class="modal-backdrop"></div>
-      <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-        <div class="modal-header">
-          <h3 id="modalTitle"></h3>
-          <button id="modalClose" type="button" aria-label="Close modal">-</button>
-        </div>
-        <div id="modalBody" class="modal-body"></div>
-        <div id="modalFooter" class="modal-footer"></div>
-      </div>
-    </div>
-    <script src="chrome-shim.js"></script>
-    <script src="background-web.js"></script>
-    <script src="popup-web.js"></script>
+    <script>
+      (() => {
+        const Theme = { LIGHT: 'light', DARK: 'dark' };
+        const STORAGE_KEY = 'themePreference';
+        const toggleButton = document.getElementById('navThemeToggle');
+        const systemPrefersDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+        const resolveTheme = () => {
+          try {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored === Theme.LIGHT || stored === Theme.DARK) return stored;
+          } catch (_) {
+            /* localStorage might be disabled; fall back to system */
+          }
+          return systemPrefersDark?.matches ? Theme.DARK : Theme.LIGHT;
+        };
+
+        const updateToggleLabel = (mode) => {
+          if (!toggleButton) return;
+          const isDark = mode === Theme.DARK;
+          toggleButton.textContent = isDark ? 'Light mode' : 'Dark mode';
+          toggleButton.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+          toggleButton.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
+        };
+
+        const applyTheme = (mode) => {
+          const theme = mode === Theme.DARK ? Theme.DARK : Theme.LIGHT;
+          document.body.classList.toggle('theme-dark', theme === Theme.DARK);
+          document.body.classList.toggle('theme-light', theme === Theme.LIGHT);
+          try {
+            localStorage.setItem(STORAGE_KEY, theme);
+          } catch (_) {
+            /* ignore storage errors */
+          }
+          updateToggleLabel(theme);
+        };
+
+        const initialTheme = resolveTheme();
+        applyTheme(initialTheme);
+
+        toggleButton?.addEventListener('click', () => {
+          const next = document.body.classList.contains('theme-dark') ? Theme.LIGHT : Theme.DARK;
+          applyTheme(next);
+        });
+
+        systemPrefersDark?.addEventListener?.('change', (event) => {
+          try {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored !== Theme.LIGHT && stored !== Theme.DARK) {
+              applyTheme(event.matches ? Theme.DARK : Theme.LIGHT);
+            }
+          } catch (_) {
+            applyTheme(event.matches ? Theme.DARK : Theme.LIGHT);
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

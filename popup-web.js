@@ -122,6 +122,7 @@ let storedDocs = [];
 let activeBriefData = null;
 let revisionModalState = null;
 const docLabelCache = new Map();
+let hasLaunchedSettingsOnboarding = false;
 const selectedDocsByMode = {
   [Mode.TARGETED_BRIEF]: [],
   [Mode.TARGET_GENERATION]: [],
@@ -1073,12 +1074,26 @@ if (modeTabList.length) {
 }
 
 const onboardingTarget = getOnboardingTargetFromUrl();
-if (onboardingTarget === 'settings') {
+const launchSettingsOnboarding = () => {
+  if (hasLaunchedSettingsOnboarding) return;
+  hasLaunchedSettingsOnboarding = true;
   openSettingsModal({
     onSave: () => {
       clearOnboardingFlagFromUrl();
       focusMode(Mode.TARGETED_BRIEF, briefFormPane);
     },
+  });
+};
+if (onboardingTarget === 'settings') {
+  launchSettingsOnboarding();
+} else {
+  geminiKeyLoadPromise.then((storedKey) => {
+    if (!storedKey) {
+      launchSettingsOnboarding();
+    }
+  }).catch(() => {
+    // even if storage read fails, try to open settings once to unblock the user
+    launchSettingsOnboarding();
   });
 }
 

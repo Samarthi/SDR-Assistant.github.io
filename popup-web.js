@@ -1084,18 +1084,26 @@ const launchSettingsOnboarding = () => {
     },
   });
 };
-if (onboardingTarget === 'settings') {
-  launchSettingsOnboarding();
-} else {
-  geminiKeyLoadPromise.then((storedKey) => {
-    if (!storedKey) {
+Promise.all([geminiKeyLoadPromise, pitchingCompanyLoadPromise])
+  .then(([storedKey, storedPitch]) => {
+    const hasKey = Boolean(storedKey);
+    const hasPitch = Boolean(storedPitch);
+    if (onboardingTarget === 'settings') {
+      if (hasKey && hasPitch) {
+        clearOnboardingFlagFromUrl();
+        return;
+      }
+      launchSettingsOnboarding();
+      return;
+    }
+    if (!hasKey) {
       launchSettingsOnboarding();
     }
-  }).catch(() => {
+  })
+  .catch(() => {
     // even if storage read fails, try to open settings once to unblock the user
     launchSettingsOnboarding();
   });
-}
 
 heroBriefBtn?.addEventListener('click', () => {
   focusMode(Mode.TARGETED_BRIEF, briefFormPane);

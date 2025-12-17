@@ -72,6 +72,7 @@ async function callGeminiDirect(promptText, opts = {}) {
   const customContents = Array.isArray(opts.contents) && opts.contents.length ? opts.contents : null;
   const requestedTools = Array.isArray(opts.tools) && opts.tools.length ? opts.tools.filter(Boolean) : null;
   const hasTools = !!(requestedTools && requestedTools.length);
+  const allowDefaultTools = !opts.disableDefaultTools;
 
   // Tools + responseMimeType=json is unsupported; drop the mime hint if tools are requested.
   if (hasTools && generationConfig.responseMimeType === "application/json") {
@@ -88,7 +89,7 @@ async function callGeminiDirect(promptText, opts = {}) {
 
   if (hasTools) {
     body.tools = requestedTools;
-  } else if (!isStructured) {
+  } else if (!isStructured && allowDefaultTools) {
     body.tools = [{ google_search: {} }];
   }
 
@@ -161,6 +162,48 @@ async function callGeminiDirect(promptText, opts = {}) {
   } catch (err) {
     return { error: `Network request failed: ${String(err)}` };
   }
+}
+
+async function callGeminiWithRetry(promptText, opts = {}) {
+  const baseConfig = opts.generationConfig || {};
+  const primary = await callGeminiDirect(promptText, opts);
+  if (!primary.error) {
+    return primary;
+  }
+
+  const attempts = [
+    {
+      label: "primary",
+      error: primary.error,
+      details: primary.details || primary.raw || null,
+    },
+  ];
+
+  const boostedMaxTokens = Math.min(
+    typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.5) : 12000,
+    100000
+  );
+
+  const retry = await callGeminiDirect(promptText, {
+    ...opts,
+    generationConfig: {
+      ...baseConfig,
+      maxOutputTokens: boostedMaxTokens,
+    },
+    tools: [],
+    disableDefaultTools: true,
+  });
+
+  if (retry.error) {
+    attempts.push({
+      label: "retry_no_tools",
+      error: retry.error,
+      details: retry.details || retry.raw || null,
+    });
+    return { ...retry, attempts };
+  }
+
+  return { ...retry, attempts };
 }
 
 function extractJsonFromText(s) {
@@ -342,6 +385,24 @@ function buildResearchCycleMetric({ startTimeMs, endTimeMs, request = {}, runId 
     runId: runId || "",
     request: requestSummary,
     error: success ? "" : truncateText(error || "", 200),
+  };
+}
+
+function buildGenerationErrorMetric({ feature = "unknown", error = "", request = {}, runId = "" }) {
+  const normalizedFeature = feature === "targets" ? "targets" : "briefs";
+  return {
+    kind: "generation_error",
+    feature: normalizedFeature,
+    occurredAt: new Date().toISOString(),
+    runId: runId || "",
+    error: truncateText(error || "", 300),
+    request: {
+      companyLength: typeof request.company === "string" ? request.company.length : 0,
+      locationLength: typeof request.location === "string" ? request.location.length : 0,
+      productLength: typeof request.product === "string" ? request.product.length : 0,
+      docCount: Array.isArray(request.docs) ? request.docs.length : 0,
+      sectorCount: Array.isArray(request.sectors) ? request.sectors.filter(Boolean).length : 0,
+    },
   };
 }
 
@@ -642,7 +703,7 @@ Respond in STRICT JSON with this shape (no Markdown fences, no commentary):
   ]
 }`;
 
-  const resp = await callGeminiDirect(prompt, {
+  const resp = await callGeminiWithRetry(prompt, {
     generationConfig: {
       temperature: 0.4,
       maxOutputTokens: 100000,
@@ -1339,7 +1400,7 @@ Respond strictly in JSON:
 `;
 
   try {
-    const resp = await callGeminiDirect(prompt, {
+    const resp = await callGeminiWithRetry(prompt, {
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: 9000,
@@ -1820,7 +1881,7 @@ async function generateTelephonicPitchScripts({ personas, company, location, pro
         temperature: 0.2,
         maxOutputTokens: 4096,
       };
-      const teleResp = await callGeminiDirect(prompt, {
+      const teleResp = await callGeminiWithRetry(prompt, {
         generationConfig,
         tools: [{ google_search: {} }],
       });
@@ -1882,7 +1943,7 @@ async function generatePersonaEmails({ personas, company, location, product, doc
     pitchFromCompany: pitchingCompany,
   });
 
-  const resp = await callGeminiDirect(prompt, {
+  const resp = await callGeminiWithRetry(prompt, {
     generationConfig: {
       temperature: 0.2,
       maxOutputTokens: 12000,
@@ -2002,7 +2063,7 @@ async function revisePersonaEmail({ persona, email, company, product, location, 
       pitchingOrg,
     });
 
-    const resp = await callGeminiDirect(prompt, {
+    const resp = await callGeminiWithRetry(prompt, {
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: 12000,
@@ -2060,7 +2121,7 @@ async function revisePersonaPitch({ persona, pitch, company, product, location, 
       pitchingOrg,
     });
 
-    const resp = await callGeminiDirect(prompt, {
+    const resp = await callGeminiWithRetry(prompt, {
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: 12000,
@@ -2150,7 +2211,7 @@ ${docsText || "(no docs provided)"}
 Provide JSON with: company_name, revenue_estimate (realistic string), industry_sector, and top_5_news (array of {"title","summary"}).
 Do not include markdown fences.`;
 
-  const resp = await callGeminiDirect(prompt, {
+  const resp = await callGeminiWithRetry(prompt, {
     generationConfig: {
       temperature: 0.2,
       maxOutputTokens: 6000,
@@ -2249,7 +2310,7 @@ Rules:
       They can walk you through how [Target Company] could use it for [Your Product's Effects and Improvements]. Would that work for you sometime this week?" 
 - Include a ZoomInfo or LinkedIn style Google search link for each persona (omit "google search:" text).`;
 
-  const resp = await callGeminiDirect(prompt, {
+  const resp = await callGeminiWithRetry(prompt, {
     generationConfig: {
       temperature: 0.2,
       maxOutputTokens: 12000,
@@ -2632,6 +2693,19 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
               { product: req.product, location: req.location, docName: req.docName, docs: req.docs, sectors: req.sectors },
               { companies: result.companies }
             );
+          } else if (result && result.error) {
+            const errorMetric = buildGenerationErrorMetric({
+              feature: "targets",
+              error: [result.error, typeof result.details === "string" ? result.details : ""].filter(Boolean).join(" | "),
+              request: {
+                product: req.product,
+                location: req.location,
+                sectors: req.sectors,
+                docs: req.docs,
+              },
+            });
+            enqueueTelemetryMetric(errorMetric).catch(() => {});
+            flushTelemetryQueue().catch(() => {});
           }
           sendResponse(result);
           return;
@@ -2662,7 +2736,17 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             success,
             error: result?.error || "",
           });
-          enqueueTelemetryMetric(metric).catch(() => {});
+          const telemetryTasks = [enqueueTelemetryMetric(metric)];
+          if (result?.error) {
+            const errorMetric = buildGenerationErrorMetric({
+              feature: "briefs",
+              error: result.error,
+              request: payload,
+              runId: payload.runId,
+            });
+            telemetryTasks.push(enqueueTelemetryMetric(errorMetric));
+          }
+          Promise.all(telemetryTasks).catch(() => {});
           flushTelemetryQueue().catch(() => {});
 
           sendResponse(result);
@@ -2797,7 +2881,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           }
 
           const prompt = composeExportPrompt(columns, filteredEntries, format);
-          const llmResult = await callGeminiDirect(prompt, {
+          const llmResult = await callGeminiWithRetry(prompt, {
             generationConfig: {
               temperature: 0.1,
               maxOutputTokens: 4096,

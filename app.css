@@ -2333,7 +2333,8 @@ button.ghost:disabled {
 }
 
 .history-action.primary:hover {
-    background: transparent;
+    background: var(--color-secondary);
+    color: #fff;
     box-shadow: none;
     transform: none;
 }

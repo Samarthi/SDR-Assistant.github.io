@@ -84,6 +84,19 @@ const EXPORT_TEMPLATES_STORAGE_KEY = 'exportTemplates';
 const EXPORT_MODAL_STATE_STORAGE_KEY = 'exportModalState';
 const EXPORT_PAGE_SIZE = 8;
 const PITCH_FROM_COMPANY_KEY = 'pitchFromCompany';
+const LLMProvider = {
+  GEMINI: 'gemini',
+  GROQ: 'groq',
+};
+const LLM_PROVIDER_STORAGE_KEY = 'llmProvider';
+const LLM_MODEL_STORAGE_KEY = 'llmModel';
+const GROQ_KEY_STORAGE_KEY = 'groqKey';
+const GROQ_COMPOUND_MINI_MODEL = 'groq/compound-mini';
+const DEFAULT_LLM_MODELS = {
+  [LLMProvider.GEMINI]: 'gemini-2.5-flash',
+  [LLMProvider.GROQ]: GROQ_COMPOUND_MINI_MODEL,
+};
+const GROQ_LEGACY_MODEL = 'gpt-oss-20b';
 
 const Mode = {
   TARGETED_BRIEF: 'targetedBrief',
@@ -130,6 +143,9 @@ const selectedDocsByMode = {
 const briefProgressState = { runId: null, total: 0, current: 0 };
 let themePreference = ThemePreference.SYSTEM;
 let cachedGeminiKey = '';
+let cachedGroqKey = '';
+let cachedLlmProvider = LLMProvider.GEMINI;
+let cachedLlmModel = DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
 let cachedPitchingCompany = '';
 
 function debounce(fn, wait = 150) {
@@ -147,6 +163,37 @@ function debounce(fn, wait = 150) {
       }
     }, wait);
   };
+}
+
+function normalizeLlmProvider(provider, hasGeminiKey, hasGroqKey) {
+  if (provider === LLMProvider.GEMINI || provider === LLMProvider.GROQ) return provider;
+  if (hasGroqKey) return LLMProvider.GROQ;
+  if (hasGeminiKey) return LLMProvider.GEMINI;
+  return LLMProvider.GROQ;
+}
+
+function normalizeLlmModel(model, provider) {
+  if (typeof model === 'string' && model.trim()) return model.trim();
+  return DEFAULT_LLM_MODELS[provider] || DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
+}
+
+function coerceModelForProvider(provider, model) {
+  const fallback = DEFAULT_LLM_MODELS[provider] || DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
+  if (!model || typeof model !== 'string') return fallback;
+  const normalized = model.trim();
+  if (provider === LLMProvider.GEMINI) {
+    return normalized.toLowerCase().startsWith('gemini') ? normalized : fallback;
+  }
+  if (provider === LLMProvider.GROQ) {
+    const lower = normalized.toLowerCase();
+    const isLegacyGroq20b = lower.includes(GROQ_LEGACY_MODEL);
+    // Fix misordered/unknown Groq ids like "openai/oss-gpt-20b" by upgrading to primary.
+    if (isLegacyGroq20b || lower.includes('oss-gpt')) {
+      return DEFAULT_LLM_MODELS[LLMProvider.GROQ];
+    }
+    return lower.startsWith('gemini') ? fallback : normalized;
+  }
+  return fallback;
 }
 
 function normalizeThemePreference(value) {
@@ -209,17 +256,35 @@ if (systemThemeMedia?.addEventListener) {
 
 applyTheme(themePreference);
 const themePreferenceLoadPromise = loadThemePreferenceFromStorage();
-const geminiKeyLoadPromise = chrome.storage.local
-  .get(['geminiKey'])
+const llmSettingsLoadPromise = chrome.storage.local
+  .get([LLM_PROVIDER_STORAGE_KEY, LLM_MODEL_STORAGE_KEY, 'geminiKey', GROQ_KEY_STORAGE_KEY])
   .then((data) => {
-    const val = data && typeof data.geminiKey === 'string' ? data.geminiKey : '';
-    cachedGeminiKey = val;
-    if (apiKeyInput) {
-      apiKeyInput.value = val;
+    const geminiKey = data && typeof data.geminiKey === 'string' ? data.geminiKey : '';
+    const groqKey = data && typeof data[GROQ_KEY_STORAGE_KEY] === 'string' ? data[GROQ_KEY_STORAGE_KEY] : '';
+    const provider = normalizeLlmProvider(data && data[LLM_PROVIDER_STORAGE_KEY], !!geminiKey, !!groqKey);
+    let model = coerceModelForProvider(provider, normalizeLlmModel(data && data[LLM_MODEL_STORAGE_KEY], provider));
+    if (
+      provider === LLMProvider.GROQ &&
+      typeof model === 'string' &&
+      model.toLowerCase().includes(GROQ_LEGACY_MODEL)
+    ) {
+      model = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
     }
-    return val;
+    cachedGeminiKey = geminiKey;
+    cachedGroqKey = groqKey;
+    cachedLlmProvider = provider;
+    cachedLlmModel = model;
+    if (apiKeyInput) {
+      apiKeyInput.value = provider === LLMProvider.GROQ ? groqKey : geminiKey;
+    }
+    return { provider, model, geminiKey, groqKey };
   })
-  .catch(() => '');
+  .catch(() => ({
+    provider: LLMProvider.GEMINI,
+    model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
+    geminiKey: '',
+    groqKey: '',
+  }));
 const pitchingCompanyLoadPromise = chrome.storage.local
   .get([PITCH_FROM_COMPANY_KEY])
   .then((data) => {
@@ -449,10 +514,14 @@ function resetTargetResults() {
   }
 }
 
-function setTelePitchOutput(message, { isError = false } = {}) {
+function setTelePitchOutput(message, { isError = false, allowMarkdown = false } = {}) {
   if (!telePitchOut) return;
   const text = typeof message === 'string' ? message : '';
-  telePitchOut.innerText = text;
+  if (allowMarkdown && !isError) {
+    telePitchOut.innerHTML = markdownToHtml(text);
+  } else {
+    telePitchOut.textContent = text;
+  }
   telePitchOut.style.color = isError ? '#b91c1c' : '';
 }
 
@@ -657,6 +726,12 @@ function buildVersionEntry(baseDraft = {}) {
   };
 }
 
+function hasContent(obj) {
+  if (!obj) return false;
+  if (typeof obj === 'string') return obj.trim().length > 0;
+  return typeof obj === 'object' && Object.keys(obj).length > 0;
+}
+
 function clampIndex(idx, arr) {
   if (!Array.isArray(arr) || !arr.length) return -1;
   return Math.max(0, Math.min(idx, arr.length - 1));
@@ -681,6 +756,12 @@ function syncVersionState() {
     if (!emailVersions[i]) {
       const base = personaEmails[i] || {};
       emailVersions[i] = buildVersionEntry(base);
+    } else if (hasContent(personaEmails[i])) {
+      const activeIdx = typeof emailVersions[i].activeIndex === 'number' ? emailVersions[i].activeIndex : 0;
+      const currentDraft = emailVersions[i].versions?.[activeIdx] || {};
+      if (!hasContent(currentDraft)) {
+        emailVersions[i] = buildVersionEntry(personaEmails[i]);
+      }
     } else if (!Array.isArray(emailVersions[i].versions) || !emailVersions[i].versions.length) {
       emailVersions[i].versions = [personaEmails[i] || {}];
       emailVersions[i].activeIndex = 0;
@@ -708,6 +789,12 @@ function syncVersionState() {
     if (!pitchVersions[i]) {
       const base = telePitches[i] || {};
       pitchVersions[i] = buildVersionEntry(base);
+    } else if (hasContent(telePitches[i])) {
+      const activeIdx = typeof pitchVersions[i].activeIndex === 'number' ? pitchVersions[i].activeIndex : 0;
+      const currentDraft = pitchVersions[i].versions?.[activeIdx] || {};
+      if (!hasContent(currentDraft)) {
+        pitchVersions[i] = buildVersionEntry(telePitches[i]);
+      }
     } else if (!Array.isArray(pitchVersions[i].versions) || !pitchVersions[i].versions.length) {
       pitchVersions[i].versions = [telePitches[i] || {}];
       pitchVersions[i].activeIndex = 0;
@@ -1084,9 +1171,9 @@ const launchSettingsOnboarding = () => {
     },
   });
 };
-Promise.all([geminiKeyLoadPromise, pitchingCompanyLoadPromise])
-  .then(([storedKey, storedPitch]) => {
-    const hasKey = Boolean(storedKey);
+Promise.all([llmSettingsLoadPromise, pitchingCompanyLoadPromise])
+  .then(([llmSettings, storedPitch]) => {
+    const hasKey = Boolean(llmSettings && (llmSettings.geminiKey || llmSettings.groqKey));
     const hasPitch = Boolean(storedPitch);
     if (onboardingTarget === 'settings') {
       if (hasKey && hasPitch) {
@@ -1129,8 +1216,27 @@ heroSettingsBtn?.addEventListener('click', () => {
 saveKeyBtn?.addEventListener('click', async () => {
   const key = apiKeyInput.value.trim();
   if (!key) { status.innerText = 'API key required'; status.style.color = '#b91c1c'; return; }
-  await chrome.storage.local.set({ geminiKey: key });
-  status.innerText = 'API key saved.';
+  const provider = cachedLlmProvider === LLMProvider.GROQ ? LLMProvider.GROQ : LLMProvider.GEMINI;
+  const payload = {
+    [LLM_PROVIDER_STORAGE_KEY]: provider,
+    [LLM_MODEL_STORAGE_KEY]: coerceModelForProvider(provider, cachedLlmModel),
+  };
+  const keysToRemove = [];
+  if (provider === LLMProvider.GROQ) {
+    payload[GROQ_KEY_STORAGE_KEY] = key;
+    keysToRemove.push('geminiKey');
+    cachedGroqKey = key;
+  } else {
+    payload.geminiKey = key;
+    keysToRemove.push(GROQ_KEY_STORAGE_KEY);
+    cachedGeminiKey = key;
+  }
+  cachedLlmProvider = provider;
+  await chrome.storage.local.set(payload);
+  if (keysToRemove.length) {
+    await chrome.storage.local.remove(keysToRemove);
+  }
+  status.innerText = `${provider === LLMProvider.GROQ ? 'Groq' : 'Gemini'} API key saved.`;
   status.style.color = '';
 });
 
@@ -1654,7 +1760,7 @@ document.addEventListener('keydown', (evt) => {
 });
 
 function openSettingsModal(options = {}) {
-  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, geminiKeyLoadPromise]).finally(() => {
+  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, llmSettingsLoadPromise]).finally(() => {
     openModal({
       title: 'Settings',
       render: (ctx) => renderSettingsModal(ctx, options),
@@ -2216,73 +2322,151 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
   themeHelper.textContent = 'Switch between light and dark, or match your device\'s theme.';
   themeSection.appendChild(themeHelper);
   const themeOptions = document.createElement('div');
-  themeOptions.className = 'range-radios';
+  themeOptions.className = 'choice-grid theme-choice-grid';
   themeSection.appendChild(themeOptions);
   const currentThemeSetting = themePreference || ThemePreference.SYSTEM;
+  let selectedTheme = currentThemeSetting;
+  const themeChoiceLabels = [];
+  const themeIcons = {
+    [ThemePreference.SYSTEM]:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"></rect><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="16" x2="12" y2="20"></line></svg>',
+    [ThemePreference.LIGHT]:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>',
+    [ThemePreference.DARK]:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 0 1 11.21 3 7 7 0 0 0 12 21a7 7 0 0 0 9-8.21Z"></path></svg>',
+  };
+  const updateThemeChoiceState = () => {
+    themeChoiceLabels.forEach((label) => {
+      const input = label.querySelector('input[type="radio"]');
+      const isActive = input?.value === selectedTheme;
+      if (input) input.checked = isActive;
+      label.classList.toggle('active', isActive);
+    });
+  };
   [
-    { value: ThemePreference.SYSTEM, label: 'Match system' },
-    { value: ThemePreference.LIGHT, label: 'Light' },
-    { value: ThemePreference.DARK, label: 'Dark' },
+    { value: ThemePreference.SYSTEM, label: 'Match system', description: 'Follow your OS appearance' },
+    { value: ThemePreference.LIGHT, label: 'Light mode', description: 'Bright, high-contrast surface' },
+    { value: ThemePreference.DARK, label: 'Dark mode', description: 'Dimmed UI for low light' },
   ].forEach((option) => {
     const label = document.createElement('label');
+    label.className = 'choice-card theme-choice';
+    label.dataset.value = option.value;
     const radio = document.createElement('input');
     radio.type = 'radio';
     radio.name = 'themePreference';
     radio.value = option.value;
-    radio.checked = currentThemeSetting === option.value;
-    label.appendChild(radio);
-    label.appendChild(document.createTextNode(option.label));
-    themeOptions.appendChild(label);
+    radio.className = 'visually-hidden';
+    radio.checked = selectedTheme === option.value;
     themeInputs.push(radio);
+    const icon = document.createElement('div');
+    icon.className = 'choice-icon';
+    icon.innerHTML = themeIcons[option.value];
+    const textWrap = document.createElement('div');
+    textWrap.className = 'choice-text';
+    const title = document.createElement('div');
+    title.className = 'choice-label';
+    title.textContent = option.label;
+    const desc = document.createElement('div');
+    desc.className = 'choice-sub';
+    desc.textContent = option.description;
+    textWrap.appendChild(title);
+    textWrap.appendChild(desc);
+    label.appendChild(radio);
+    label.appendChild(icon);
+    label.appendChild(textWrap);
+    label.addEventListener('click', () => {
+      selectedTheme = option.value;
+      updateThemeChoiceState();
+    });
+    radio.addEventListener('change', () => {
+      selectedTheme = option.value;
+      updateThemeChoiceState();
+    });
+    themeChoiceLabels.push(label);
+    themeOptions.appendChild(label);
   });
+  updateThemeChoiceState();
   form.appendChild(themeSection);
 
   const apiSection = document.createElement('div');
   apiSection.className = 'modal-section';
   const apiHeader = document.createElement('h4');
-  apiHeader.textContent = 'Add API key';
+  apiHeader.textContent = 'Groq API key';
   apiSection.appendChild(apiHeader);
   const apiHelper = document.createElement('p');
   apiHelper.className = 'modal-helper';
-  apiHelper.textContent = 'Provide your Gemini API key. This is required for AI powered exports and brief generation.';
+  apiHelper.textContent = 'Use Groq (OpenAI-compatible). Add your API key.';
   apiSection.appendChild(apiHelper);
-  const apiInfoBlock = document.createElement('p');
-  apiInfoBlock.className = 'modal-helper';
-  apiInfoBlock.appendChild(document.createTextNode('Need a key? '));
-  const apiLink = document.createElement('a');
-  apiLink.href = 'https://aistudio.google.com/api-keys';
-  apiLink.target = '_blank';
-  apiLink.rel = 'noopener noreferrer';
-  apiLink.textContent = 'Create one in Google AI Studio';
-  apiInfoBlock.appendChild(apiLink);
-  apiInfoBlock.appendChild(document.createTextNode('. Create a project, add an API key under that project, then copy the key and paste it here.'));
-  apiSection.appendChild(apiInfoBlock);
-  const apiInputWrapper = document.createElement('div');
-  apiInputWrapper.className = 'input-with-toggle';
-  const apiInputField = document.createElement('input');
-  apiInputField.type = 'password';
-  apiInputField.placeholder = 'Gemini API key';
-  // Pre-fill with cached key or stored value if available.
-  apiInputField.value = (apiKeyInput?.value?.trim() || cachedGeminiKey || '').trim();
-  const apiVisibilityToggle = document.createElement('button');
-  apiVisibilityToggle.type = 'button';
-  apiVisibilityToggle.className = 'input-toggle';
-  apiVisibilityToggle.setAttribute('aria-label', 'Show API key');
+  const apiFlow = document.createElement('div');
+  apiFlow.className = 'api-flow';
+  const providerInstruction = document.createElement('div');
+  providerInstruction.className = 'provider-instructions';
+  const instructionTitle = document.createElement('div');
+  instructionTitle.className = 'instructions-title';
+  instructionTitle.textContent = 'Get a Groq key';
+  providerInstruction.appendChild(instructionTitle);
+  const instructionList = document.createElement('ol');
+  [
+    'Sign in to the Groq console and open the API Keys page.',
+    'Create a new key or reuse an existing one for your project.',
+    'Keys are OpenAI-compatible; paste it below to enable Groq.',
+  ].forEach((step) => {
+    const li = document.createElement('li');
+    li.textContent = step;
+    instructionList.appendChild(li);
+  });
+  providerInstruction.appendChild(instructionList);
+  const groqLink = document.createElement('a');
+  groqLink.href = 'https://console.groq.com/keys';
+  groqLink.target = '_blank';
+  groqLink.rel = 'noopener noreferrer';
+  groqLink.className = 'instruction-link';
+  groqLink.textContent = 'Open Groq console';
+  providerInstruction.appendChild(groqLink);
+
+  providerInstruction.style.marginBottom = '12px';
+  apiFlow.appendChild(providerInstruction);
+
   const eyeIcon = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z\"></path><circle cx=\"12\" cy=\"12\" r=\"3\"></circle></svg>';
   const eyeOffIcon = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.5 21.5 0 0 1 5.06-5.94\"></path><path d=\"M1 1l22 22\"></path><path d=\"M9.53 9.53a3 3 0 0 0 4.24 4.24\"></path><path d=\"M14.47 14.47 9.53 9.53\"></path></svg>';
-  const updateApiVisibilityIcon = (isVisible) => {
-    apiVisibilityToggle.innerHTML = isVisible ? eyeIcon : eyeOffIcon;
-    apiVisibilityToggle.setAttribute('aria-label', isVisible ? 'Hide API key' : 'Show API key');
+  const buildKeyField = (placeholder, initialValue) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'input-with-toggle';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.placeholder = placeholder;
+    input.value = initialValue || '';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'input-toggle';
+    const updateIcon = (isVisible) => {
+      toggle.innerHTML = isVisible ? eyeIcon : eyeOffIcon;
+      toggle.setAttribute('aria-label', isVisible ? 'Hide API key' : 'Show API key');
+    };
+    updateIcon(false);
+    toggle.addEventListener('click', () => {
+      const isHidden = input.type === 'password';
+      input.type = isHidden ? 'text' : 'password';
+      updateIcon(isHidden);
+    });
+    wrapper.appendChild(input);
+    wrapper.appendChild(toggle);
+    return { wrapper, input };
   };
-  updateApiVisibilityIcon(false);
-  apiVisibilityToggle.addEventListener('click', () => {
-    const isHidden = apiInputField.type === 'password';
-    apiInputField.type = isHidden ? 'text' : 'password';
-    updateApiVisibilityIcon(isHidden);
-  });
-  apiInputWrapper.appendChild(apiInputField);
-  apiInputWrapper.appendChild(apiVisibilityToggle);
-  apiSection.appendChild(apiInputWrapper);
+
+  const groqKeyField = buildKeyField('Groq API key', (cachedGroqKey || '').trim());
+  groqKeyField.input.style.padding = '12px 14px';
+
+  const groqKeyLabel = document.createElement('p');
+  groqKeyLabel.className = 'modal-helper';
+  groqKeyLabel.textContent = 'Groq key (OpenAI-compatible API)';
+
+  const groqKeyContainer = document.createElement('div');
+  groqKeyContainer.appendChild(groqKeyLabel);
+  groqKeyContainer.appendChild(groqKeyField.wrapper);
+  apiFlow.appendChild(groqKeyContainer);
+  apiSection.appendChild(apiFlow);
+
   form.appendChild(apiSection);
 
   body.appendChild(form);
@@ -2306,15 +2490,29 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
     errorEl.style.display = 'none';
     errorEl.textContent = '';
 
-    const key = apiInputField.value.trim();
-    const selectedTheme = (themeInputs.find((input) => input.checked)?.value) || ThemePreference.SYSTEM;
+    const provider = LLMProvider.GROQ;
+    const model = coerceModelForProvider(
+      provider,
+      normalizeLlmModel(cachedLlmModel || DEFAULT_LLM_MODELS[LLMProvider.GROQ] || '', provider),
+    );
+    const groqKey = groqKeyField.input.value.trim();
+    const selectedThemeValue = selectedTheme || (themeInputs.find((input) => input.checked)?.value) || ThemePreference.SYSTEM;
     const pitchingCompany = pitchingInput.value.trim();
 
     try {
-      if (key) {
-        await chrome.storage.local.set({ geminiKey: key });
+      const payload = {
+        [LLM_PROVIDER_STORAGE_KEY]: provider,
+        [LLM_MODEL_STORAGE_KEY]: model,
+      };
+      const keysToRemove = ['geminiKey'];
+      if (groqKey) {
+        payload[GROQ_KEY_STORAGE_KEY] = groqKey;
       } else {
-        await chrome.storage.local.remove('geminiKey');
+        keysToRemove.push(GROQ_KEY_STORAGE_KEY);
+      }
+      await chrome.storage.local.set(payload);
+      if (keysToRemove.length) {
+        await chrome.storage.local.remove(keysToRemove);
       }
       if (pitchingCompany) {
         await chrome.storage.local.set({ [PITCH_FROM_COMPANY_KEY]: pitchingCompany });
@@ -2323,8 +2521,12 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
         await chrome.storage.local.remove(PITCH_FROM_COMPANY_KEY);
         cachedPitchingCompany = '';
       }
-      await saveThemePreference(selectedTheme);
-      if (apiKeyInput) apiKeyInput.value = key;
+      cachedGeminiKey = '';
+      cachedGroqKey = groqKey;
+      cachedLlmProvider = provider;
+      cachedLlmModel = model;
+      await saveThemePreference(selectedThemeValue);
+      if (apiKeyInput) apiKeyInput.value = groqKey;
       if (status) {
         status.innerText = 'Settings saved.';
         status.style.color = '';
@@ -2332,7 +2534,7 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
       close();
       if (typeof options.onSave === 'function') {
         try {
-          options.onSave({ geminiKey: key, theme: selectedTheme, pitchingCompany });
+          options.onSave({ provider, model, groqKey, theme: selectedThemeValue, pitchingCompany });
         } catch (err) {
           console.warn('onSave handler failed', err);
         }
@@ -3811,7 +4013,7 @@ function activatePersonaTab(index) {
       setTelePitchOutput(`Telephonic pitch failed: ${telephonicPitchErrorMessage}`, { isError: true });
     } else {
       const pitchText = typeof draft.telePitch === 'string' ? draft.telePitch.trim() : '';
-      setTelePitchOutput(pitchText || 'No telephonic pitch available for this persona yet.');
+      setTelePitchOutput(pitchText || 'No telephonic pitch available for this persona yet.', { allowMarkdown: !!pitchText });
     }
   }
 

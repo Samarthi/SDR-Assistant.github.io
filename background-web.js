@@ -15,6 +15,22 @@ const TELEMETRY_BATCH_SIZE = 10;
 const TELEMETRY_QUEUE_LIMIT = 200;
 const INSTALLATION_ID_KEY = "installationId";
 const LAST_ACTIVE_PING_DATE_KEY = "lastActivePingDate";
+const LLM_PROVIDER_STORAGE_KEY = "llmProvider";
+const LLM_MODEL_STORAGE_KEY = "llmModel";
+const GROQ_KEY_STORAGE_KEY = "groqKey";
+const LLMProvider = {
+  GEMINI: "gemini",
+  GROQ: "groq",
+};
+const GROQ_COMPOUND_MODEL = "groq/compound";
+const GROQ_COMPOUND_MINI_MODEL = "groq/compound-mini";
+const DEFAULT_LLM_MODELS = {
+  [LLMProvider.GEMINI]: "gemini-2.5-flash",
+  [LLMProvider.GROQ]: GROQ_COMPOUND_MINI_MODEL,
+};
+const GROQ_LEGACY_MODEL = "gpt-oss-20b";
+const GROQ_SECONDARY_MODEL = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
+const LLAMA_33_MODEL = "llama-3.3-70b-versatile";
 
 function emitBriefProgress({ runId, current, total, label }) {
   if (!runId) return;
@@ -44,61 +60,303 @@ function emitBriefPartialUpdate(runId, payload = {}) {
   }
 }
 
-async function callGeminiDirect(promptText, opts = {}) {
-  const data = await chrome.storage.local.get("geminiKey");
-  const geminiKey = data && data.geminiKey;
-  if (!geminiKey) {
-    return { error: "No Gemini API key found. Please add it in the popup." };
+function normalizeLlmProvider(provider, hasGeminiKey, hasGroqKey) {
+  if (provider === LLMProvider.GEMINI || provider === LLMProvider.GROQ) return provider;
+  if (hasGroqKey) return LLMProvider.GROQ;
+  if (hasGeminiKey) return LLMProvider.GEMINI;
+  return LLMProvider.GROQ;
+}
+
+function normalizeLlmModel(model, provider) {
+  if (typeof model === "string" && model.trim()) return model.trim();
+  return DEFAULT_LLM_MODELS[provider] || DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
+}
+
+function coerceModelForProvider(provider, model) {
+  const fallback = DEFAULT_LLM_MODELS[provider] || DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
+  if (!model || typeof model !== "string") return fallback;
+  const normalized = model.trim();
+  if (provider === LLMProvider.GEMINI) {
+    return normalized.toLowerCase().startsWith("gemini") ? normalized : fallback;
   }
+  if (provider === LLMProvider.GROQ) {
+    const lower = normalized.toLowerCase();
+    const isLegacyGroq20b = lower.includes(GROQ_LEGACY_MODEL);
+    // Fix misordered/unknown Groq ids like "openai/oss-gpt-20b" by upgrading to primary.
+    if (isLegacyGroq20b || lower.includes("oss-gpt")) {
+      return DEFAULT_LLM_MODELS[LLMProvider.GROQ];
+    }
+    return lower.startsWith("gemini") ? fallback : normalized;
+  }
+  return fallback;
+}
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+async function loadLlmSettings() {
+  try {
+    const data = await chrome.storage.local.get([
+      LLM_PROVIDER_STORAGE_KEY,
+      LLM_MODEL_STORAGE_KEY,
+      "geminiKey",
+      GROQ_KEY_STORAGE_KEY,
+    ]);
+    const geminiKey = data && data.geminiKey ? String(data.geminiKey) : "";
+    const groqKey = data && data[GROQ_KEY_STORAGE_KEY] ? String(data[GROQ_KEY_STORAGE_KEY]) : "";
+    const provider = normalizeLlmProvider(data && data[LLM_PROVIDER_STORAGE_KEY], !!geminiKey, !!groqKey);
+    let model = coerceModelForProvider(provider, normalizeLlmModel(data && data[LLM_MODEL_STORAGE_KEY], provider));
+    // Promote old Groq default to the new primary model.
+    if (
+      provider === LLMProvider.GROQ &&
+      typeof model === "string" &&
+      model.toLowerCase().includes(GROQ_LEGACY_MODEL)
+    ) {
+      model = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
+    }
+    return { provider, model, geminiKey, groqKey };
+  } catch (err) {
+    return {
+      provider: LLMProvider.GEMINI,
+      model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
+      geminiKey: "",
+      groqKey: "",
+    };
+  }
+}
 
-  const headers = {
-    "Content-Type": "application/json",
+async function callGeminiDirect(promptText, opts = {}, providerSettings = {}) {
+  // Gemini is routed through Groq for consistency with the project-wide Groq usage.
+  const groqModel =
+    coerceModelForProvider(
+      LLMProvider.GROQ,
+      (opts && opts.model && typeof opts.model === "string" ? opts.model : null) ||
+        DEFAULT_LLM_MODELS[LLMProvider.GROQ]
+    ) || DEFAULT_LLM_MODELS[LLMProvider.GROQ];
+
+  const shimmedOpts = {
+    ...opts,
+    model: groqModel,
   };
 
-  // Merge caller config with safer, deterministic defaults and clamps
+  return callGroqDirect(promptText, shimmedOpts, providerSettings);
+}
+
+async function callGeminiWithRetryInternal(promptText, opts = {}, providerSettings = {}) {
+  // Route through Groq retry logic for consistency; Gemini transport is deprecated here.
+  return callGroqWithRetry(promptText, { ...opts }, providerSettings);
+}
+
+function normalizeGroqRole(role) {
+  if (role === "model" || role === "assistant") return "assistant";
+  if (role === "system") return "system";
+  if (role === "tool") return "tool";
+  return "user";
+}
+
+function partsToText(parts = []) {
+  const arr = Array.isArray(parts) ? parts : [parts];
+  return arr
+    .map((part) => {
+      if (typeof part === "string" && part.trim()) return part.trim();
+      if (typeof part?.text === "string" && part.text.trim()) return part.text.trim();
+      if (typeof part?.inlineData?.data === "string" && part.inlineData.data.trim()) {
+        return decodeBase64Text(part.inlineData.data);
+      }
+      if (part?.functionResponse?.response) {
+        try {
+          return JSON.stringify(part.functionResponse.response);
+        } catch (err) {
+          return "";
+        }
+      }
+      if (part?.functionCall?.args) {
+        try {
+          return JSON.stringify(part.functionCall.args);
+        } catch (err) {
+          return "";
+        }
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractInstructionText(instruction) {
+  if (!instruction) return "";
+  if (typeof instruction === "string") return instruction.trim();
+  if (Array.isArray(instruction)) return partsToText(instruction);
+  if (Array.isArray(instruction.parts)) return partsToText(instruction.parts);
+  if (typeof instruction.text === "string") return instruction.text.trim();
+  return "";
+}
+
+function buildGroqMessages({ promptText, contents, systemInstruction, contextText }) {
+  const messages = [];
+  const systemSegments = [];
+
+  const normalizedInstruction = extractInstructionText(systemInstruction);
+  if (normalizedInstruction) systemSegments.push(normalizedInstruction);
+  if (typeof contextText === "string" && contextText.trim()) {
+    systemSegments.push(contextText.trim());
+  }
+
+  const systemContent = systemSegments.filter(Boolean).join("\n\n");
+  if (systemContent) {
+    messages.push({ role: "system", content: systemContent });
+  }
+
+  if (Array.isArray(contents) && contents.length) {
+    contents.forEach((item) => {
+      const role = normalizeGroqRole(item && typeof item.role === "string" ? item.role : "user");
+      const text = partsToText(item?.parts || item?.content || []);
+      if (text) {
+        messages.push({ role, content: text });
+      }
+    });
+  }
+
+  const trimmedPrompt = typeof promptText === "string" ? promptText.trim() : "";
+  if (trimmedPrompt && !messages.some((msg) => msg.role === "user" && msg.content === trimmedPrompt)) {
+    messages.push({ role: "user", content: trimmedPrompt });
+  }
+
+  if (!messages.length) {
+    messages.push({ role: "user", content: trimmedPrompt || "" });
+  }
+
+  return messages;
+}
+
+function translateToolsToGroq(tools, disableDefaultTools) {
+  if (disableDefaultTools) return { tools: [], choice: undefined };
+  if (!Array.isArray(tools) || !tools.length) return { tools: [], choice: undefined };
+
+  const alreadyOpenAi = tools.every((tool) => tool && typeof tool === "object" && tool.type);
+  if (alreadyOpenAi) {
+    return { tools, choice: "auto" };
+  }
+
+  const translated = [];
+  let addedBrowserSearch = false;
+  tools.forEach((tool) => {
+    if (!tool || typeof tool !== "object") return;
+    const hasGoogleSearch =
+      Object.prototype.hasOwnProperty.call(tool, "google_search") ||
+      Object.prototype.hasOwnProperty.call(tool, "googleSearch");
+    const hasGoogleMaps =
+      Object.prototype.hasOwnProperty.call(tool, "googleMaps") ||
+      Object.prototype.hasOwnProperty.call(tool, "google_maps");
+
+    if (hasGoogleSearch) {
+      if (!addedBrowserSearch) {
+        translated.push({ type: "browser_search" });
+        addedBrowserSearch = true;
+      }
+    }
+
+    if (hasGoogleMaps) {
+      // No dedicated Maps tool; rely on browser_search for the page.
+      if (!addedBrowserSearch) {
+        translated.push({ type: "browser_search" });
+        addedBrowserSearch = true;
+      }
+    }
+  });
+
+  return { tools: translated, choice: translated.length ? "auto" : undefined };
+}
+
+async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
+  const storedKey = providerSettings && providerSettings.groqKey ? providerSettings.groqKey : "";
+  let groqKey = storedKey;
+  if (!groqKey) {
+    const data = await chrome.storage.local.get([GROQ_KEY_STORAGE_KEY]);
+    groqKey = data && data[GROQ_KEY_STORAGE_KEY];
+  }
+  if (!groqKey) {
+    return { error: "No Groq API key found. Please add it in the popup." };
+  }
+
+  const modelName =
+    coerceModelForProvider(
+      LLMProvider.GROQ,
+      (opts && opts.model && typeof opts.model === "string" ? opts.model : null) ||
+        (providerSettings && providerSettings.model) ||
+        DEFAULT_LLM_MODELS[LLMProvider.GROQ]
+    );
+
+  const allowTools = modelName !== LLAMA_33_MODEL;
   const userCfg = opts.generationConfig || {};
-  let generationConfig = {
-    ...userCfg,
-    // Keep temperature low for determinism; clamp to [0, 0.2]
-    temperature: Math.max(0, Math.min(userCfg.temperature ?? 0.1, 0.2)),
-    // Allow large outputs while bounded; default to 100000, clamp to 100000 max
-    maxOutputTokens: Math.min(userCfg.maxOutputTokens ?? 100000, 100000),
-    // Single candidate to reduce variance
-    candidateCount: 1,
-  };
-    
-  const customContents = Array.isArray(opts.contents) && opts.contents.length ? opts.contents : null;
-  const requestedTools = Array.isArray(opts.tools) && opts.tools.length ? opts.tools.filter(Boolean) : null;
-  const hasTools = !!(requestedTools && requestedTools.length);
-  const allowDefaultTools = !opts.disableDefaultTools;
-
-  // Tools + responseMimeType=json is unsupported; drop the mime hint if tools are requested.
-  if (hasTools && generationConfig.responseMimeType === "application/json") {
-    generationConfig = { ...generationConfig };
-    delete generationConfig.responseMimeType;
-  }
-
-  const isStructured = generationConfig.responseMimeType === "application/json";
+  const temperature = Math.max(0, Math.min(userCfg.temperature ?? 0.3, 1));
+  const maxTokens = Math.max(1, Math.min(userCfg.maxOutputTokens ?? userCfg.maxTokens ?? 4000, 8192));
+  const wantsJson = userCfg.responseMimeType === "application/json";
+  const messages = buildGroqMessages({
+    promptText,
+    contents: opts.contents,
+    systemInstruction: opts.systemInstruction || opts.systemPrompt || opts.system,
+    contextText: opts.context,
+  });
+  const { tools: groqTools, choice: groqToolChoice } = translateToolsToGroq(opts.tools, opts.disableDefaultTools);
+  const topP = Math.max(0, Math.min(typeof userCfg.topP === "number" ? userCfg.topP : 1, 1));
+  const stopSequences = Array.isArray(userCfg.stopSequences || userCfg.stop)
+    ? (userCfg.stopSequences || userCfg.stop).filter((s) => typeof s === "string" && s.length)
+    : null;
+  const reasoningEffort = userCfg.reasoningEffort || opts.reasoningEffort;
+  const stream = opts.stream === true || userCfg.stream === true ? true : false;
+  const isCompoundModel = modelName === GROQ_COMPOUND_MODEL || modelName === GROQ_COMPOUND_MINI_MODEL;
 
   const body = {
-    contents: customContents || [{ role: "user", parts: [{ text: promptText || "" }] }],
-    generationConfig: generationConfig,
+    model: modelName,
+    messages,
+    temperature,
+    top_p: topP,
+    max_completion_tokens: maxTokens,
+    stream,
   };
 
-  if (hasTools) {
-    body.tools = requestedTools;
-  } else if (!isStructured && allowDefaultTools) {
-    body.tools = [{ google_search: {} }];
+  if (opts.compoundCustom && typeof opts.compoundCustom === "object") {
+    body.compound_custom = opts.compoundCustom;
+    if (!wantsJson) {
+      body.response_format = body.response_format || { type: "text" };
+    }
   }
 
-  if (opts.toolConfig && typeof opts.toolConfig === "object") {
-    body.toolConfig = opts.toolConfig;
+  if (allowTools && groqTools && groqTools.length) {
+    const hasBrowserSearch = groqTools.some(
+      (tool) => tool && typeof tool === "object" && (tool.type === "browser_search" || tool.type === "web_search")
+    );
+    if (isCompoundModel && hasBrowserSearch) {
+      body.compound_custom = {
+        tools: {
+          enabled_tools: ["web_search"],
+        },
+      };
+      // Keep response as text unless JSON explicitly requested below.
+      if (!wantsJson) {
+        body.response_format = { type: "text" };
+      }
+    } else {
+      body.tools = groqTools;
+      body.tool_choice = opts.toolChoice || groqToolChoice || "auto";
+    }
+  }
+
+  if (wantsJson) {
+    body.response_format = { type: "json_object" };
+  }
+  if (stopSequences && stopSequences.length) {
+    body.stop = stopSequences;
+  }
+  if (reasoningEffort) {
+    body.reasoning_effort = reasoningEffort;
   }
 
   try {
-    const resp = await fetch(url, {
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${groqKey}`,
+    };
+
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -106,67 +364,75 @@ async function callGeminiDirect(promptText, opts = {}) {
 
     const respText = await resp.text();
     let respJson = null;
-
     try {
       respJson = JSON.parse(respText);
-    } catch (e) {
+    } catch (err) {
       if (!resp.ok) {
-        return { error: `Gemini API error (Status ${resp.status}): ${respText}` };
+        return { error: `Groq API error (Status ${resp.status}): ${respText}`, status: resp.status };
       }
-      return { error: "Failed to parse Gemini API response as JSON.", details: respText };
+      return { error: "Failed to parse Groq API response as JSON.", details: respText, status: resp.status };
     }
 
     if (!resp.ok) {
-      const errorDetails = respJson?.error?.message || respText;
-      return { error: `Gemini API error: ${errorDetails}`, details: respJson };
+      const message = respJson?.error?.message || respText;
+      return { error: `Groq API error: ${message}`, details: respJson, status: resp.status };
     }
 
-    const candidate = respJson?.candidates?.[0];
-    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
-    const textParts = [];
-    const structuredParts = [];
-    parts.forEach((part) => {
-      if (typeof part?.text === "string" && part.text.trim()) {
-        textParts.push(part.text);
-      } else if (part?.functionCall?.args) {
-        try {
-          structuredParts.push(JSON.stringify(part.functionCall.args));
-        } catch (err) {
-          // Ignore parse issues
-        }
-      } else if (part?.functionResponse?.response) {
-        try {
-          structuredParts.push(JSON.stringify(part.functionResponse.response));
-        } catch (err) {
-          // Ignore parse issues
-        }
-      } else if (part?.inlineData?.mimeType === "application/json" && part?.inlineData?.data) {
-        const decoded = decodeBase64Text(part.inlineData.data);
-        if (decoded) structuredParts.push(decoded);
-      }
-    });
-
-    let outputText = textParts.join("\n").trim();
-    if (!outputText && structuredParts.length) {
-      outputText = structuredParts.join("\n");
+    let statusCode = resp.status;
+    const message = respJson?.choices?.[0]?.message || {};
+    const content = message.content;
+    let outputText = "";
+    if (typeof content === "string" && content.trim()) {
+      outputText = content.trim();
+    } else if (Array.isArray(content)) {
+      outputText = content
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join(" ")
+        .trim();
     }
+
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
     if (!outputText) {
-      if (candidate?.finishReason) {
-        return { error: `Gemini generation stopped: ${candidate.finishReason}`, details: respJson };
+      if (toolCalls.length) {
+        return {
+          error: "Model returned tool calls without textual content.",
+          details: respJson || { tool_calls: toolCalls },
+          status: statusCode,
+        };
       }
-      return { error: "Could not find text in Gemini response.", details: respJson };
+      return { error: "Could not find text in Groq response.", details: respJson, status: statusCode };
     }
 
-    return { ok: true, text: outputText, raw: respJson };
+    return { ok: true, text: outputText, raw: respJson, status: statusCode };
   } catch (err) {
     return { error: `Network request failed: ${String(err)}` };
   }
 }
 
-async function callGeminiWithRetry(promptText, opts = {}) {
+async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
   const baseConfig = opts.generationConfig || {};
-  const primary = await callGeminiDirect(promptText, opts);
+  const primaryModel =
+    opts && opts.model
+      ? coerceModelForProvider(LLMProvider.GROQ, opts.model)
+      : coerceModelForProvider(LLMProvider.GROQ, providerSettings.model || DEFAULT_LLM_MODELS[LLMProvider.GROQ]);
+  const secondaryModelOverride =
+    opts && typeof opts.secondaryModel === "string" && opts.secondaryModel.trim()
+      ? coerceModelForProvider(LLMProvider.GROQ, opts.secondaryModel)
+      : null;
+  const secondaryModel =
+    secondaryModelOverride ||
+    (primaryModel === GROQ_SECONDARY_MODEL ? DEFAULT_LLM_MODELS[LLMProvider.GROQ] : GROQ_SECONDARY_MODEL);
+
+  const primary = await callGroqDirect(
+    promptText,
+    {
+      ...opts,
+      model: primaryModel,
+    },
+    { ...providerSettings, model: primaryModel }
+  );
   if (!primary.error) {
     return primary;
   }
@@ -180,23 +446,29 @@ async function callGeminiWithRetry(promptText, opts = {}) {
   ];
 
   const boostedMaxTokens = Math.min(
-    typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.5) : 12000,
-    100000
+    typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.2) : 4800,
+    16000
   );
 
-  const retry = await callGeminiDirect(promptText, {
-    ...opts,
-    generationConfig: {
-      ...baseConfig,
-      maxOutputTokens: boostedMaxTokens,
+  const shouldFallbackModel = primary.status === 429;
+
+  const retry = await callGroqDirect(
+    promptText,
+    {
+      ...opts,
+      model: shouldFallbackModel ? secondaryModel : primaryModel,
+      generationConfig: {
+        ...baseConfig,
+        temperature: Math.max(0, Math.min(baseConfig.temperature ?? 0.3, 0.7)),
+        maxOutputTokens: boostedMaxTokens,
+      },
     },
-    tools: [],
-    disableDefaultTools: true,
-  });
+    { ...providerSettings, model: shouldFallbackModel ? secondaryModel : primaryModel }
+  );
 
   if (retry.error) {
     attempts.push({
-      label: "retry_no_tools",
+      label: shouldFallbackModel ? "retry_model_switch" : "retry_light",
       error: retry.error,
       details: retry.details || retry.raw || null,
     });
@@ -204,6 +476,25 @@ async function callGeminiWithRetry(promptText, opts = {}) {
   }
 
   return { ...retry, attempts };
+}
+
+async function callLlmWithRetry(promptText, opts = {}) {
+  const settings = await loadLlmSettings();
+  const providerOverride = opts && opts.providerOverride;
+  const provider = normalizeLlmProvider(providerOverride, !!settings.geminiKey, !!settings.groqKey);
+  const model = coerceModelForProvider(provider, opts && opts.model ? opts.model : settings.model);
+  const providerSettings = { ...settings, model };
+
+  // Force Groq format for all calls to avoid legacy Gemini transport.
+  const sanitizedOpts =
+    provider === LLMProvider.GROQ
+      ? opts
+      : {
+          ...opts,
+          providerOverride: LLMProvider.GROQ,
+        };
+
+  return callGroqWithRetry(promptText, sanitizedOpts, providerSettings);
 }
 
 function extractJsonFromText(s) {
@@ -274,7 +565,317 @@ function parseModelJsonResponse(resp) {
     }
   }
 
+  if (!parsed && resp?.raw?.choices?.[0]?.message?.content) {
+    const content = resp.raw.choices[0].message.content;
+    if (typeof content === "string" && content.trim()) {
+      rawText = rawText || content;
+      parsed = tryParseText(content);
+    }
+  }
+
   return { parsed, rawText };
+}
+
+function stripMarkdownFences(text = "") {
+  if (typeof text !== "string") return "";
+  return text.replace(/```[\s\S]*?```/g, (block) => {
+    const inner = block.replace(/^```\w*\s*/, "").replace(/```$/, "");
+    return inner;
+  });
+}
+
+function splitMarkdownLines(markdown = "") {
+  if (typeof markdown !== "string") return [];
+  return stripMarkdownFences(markdown)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length);
+}
+
+function parseKeyValueSegments(segment = "") {
+  const out = {};
+  if (!segment || typeof segment !== "string") return out;
+  segment
+    .split(/;\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const kv = part.split(/[:=]/);
+      if (kv.length < 2) return;
+      const key = kv.shift().trim().toLowerCase();
+      const value = kv.join(":").trim();
+      if (key) out[key] = value;
+    });
+  return out;
+}
+
+function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "") {
+  const lines = splitMarkdownLines(markdown);
+  const personas = [];
+  lines.forEach((raw, idx) => {
+    const line = raw.replace(/^-+\s*/, "").trim();
+    if (!line) return;
+    const kv = parseKeyValueSegments(line);
+    const name = kv.name || kv.persona || `Persona ${idx + 1}`;
+    const designation = kv.title || kv.designation || "";
+    const department = kv.department || kv.dept || "";
+    const link =
+      kv.searchlink ||
+      kv.search_link ||
+      kv.zoominfo ||
+      kv.zoominfo_link ||
+      kv.zoom ||
+      kv.link ||
+      "";
+    personas.push({
+      name,
+      designation,
+      department,
+      zoominfo_link: link || buildZoomInfoSearchLink({ name, designation, department }, fallbackCompany),
+    });
+  });
+  return personas;
+}
+
+function parsePersonaEmailMarkdown(markdown = "", fallbackPersona = {}) {
+  const lines = stripMarkdownFences(markdown).split(/\r?\n/);
+  let personaLineIdx = -1;
+  let subjectLineIdx = -1;
+  let bodyLineIdx = -1;
+  lines.forEach((raw, idx) => {
+    const line = (raw || "").trim();
+    if (personaLineIdx === -1 && /^persona\s*[:=]/i.test(line)) personaLineIdx = idx;
+    if (subjectLineIdx === -1 && /^subject\s*[:=]/i.test(line)) subjectLineIdx = idx;
+    if (bodyLineIdx === -1 && /^body\s*[:=]/i.test(line)) bodyLineIdx = idx;
+  });
+
+  const personaLine = personaLineIdx >= 0 ? lines[personaLineIdx].trim() : "";
+  const personaLineClean = personaLine.replace(/^persona\s*[:=]\s*/i, "").trim();
+  const personaKv = parseKeyValueSegments(personaLineClean);
+  if (!personaKv.name && personaLineClean) {
+    const firstSegment = personaLineClean.split(/;\s*/)[0];
+    if (firstSegment) personaKv.name = firstSegment.trim();
+  }
+  const personaName =
+    personaKv.name ||
+    personaKv.persona ||
+    fallbackPersona.name ||
+    fallbackPersona.personaName ||
+    fallbackPersona.persona_name ||
+    "";
+  const personaDesignation = personaKv.title || personaKv.designation || fallbackPersona.designation || "";
+  const personaDepartment = personaKv.department || personaKv.dept || fallbackPersona.department || "";
+
+  const subjectLine = subjectLineIdx >= 0 ? lines[subjectLineIdx].trim() : "";
+  const subject = subjectLine.replace(/^subject\s*[:=]\s*/i, "").trim();
+
+  let body = "";
+  if (bodyLineIdx >= 0) {
+    body = lines.slice(bodyLineIdx + 1).join("\n").trim();
+  } else if (subjectLineIdx >= 0) {
+    body = lines.slice(subjectLineIdx + 1).join("\n").trim();
+  } else {
+    body = lines.join("\n").trim();
+  }
+
+  return {
+    personaName: personaName || fallbackPersona.name || "",
+    personaDesignation,
+    personaDepartment,
+    subject,
+    body,
+  };
+}
+
+function parseTelephonicPitchMarkdown(markdown = "", fallbackPersona = {}) {
+  const lines = stripMarkdownFences(markdown).split(/\r?\n/);
+  let personaLineIdx = -1;
+  let pitchLineIdx = -1;
+  lines.forEach((raw, idx) => {
+    const line = (raw || "").trim();
+    if (personaLineIdx === -1 && /^persona\s*[:=]/i.test(line)) personaLineIdx = idx;
+    if (pitchLineIdx === -1 && /^telephonic\s*pitch\s*[:=]?/i.test(line)) pitchLineIdx = idx;
+  });
+
+  const personaLine = personaLineIdx >= 0 ? lines[personaLineIdx].trim() : "";
+  const personaLineClean = personaLine.replace(/^persona\s*[:=]\s*/i, "").trim();
+  const personaKv = parseKeyValueSegments(personaLineClean);
+  if (!personaKv.name && personaLineClean) {
+    const firstSegment = personaLineClean.split(/;\s*/)[0];
+    if (firstSegment) personaKv.name = firstSegment.trim();
+  }
+  const personaName =
+    personaKv.name ||
+    personaKv.persona ||
+    fallbackPersona.name ||
+    fallbackPersona.personaName ||
+    fallbackPersona.persona_name ||
+    "";
+  const personaDesignation = personaKv.title || personaKv.designation || fallbackPersona.designation || "";
+  const personaDepartment = personaKv.department || personaKv.dept || fallbackPersona.department || "";
+
+  let script = "";
+  if (pitchLineIdx >= 0) {
+    script = lines.slice(pitchLineIdx + 1).join("\n").trim();
+  } else if (personaLineIdx >= 0) {
+    script = lines.slice(personaLineIdx + 1).join("\n").trim();
+  } else {
+    script = lines.join("\n").trim();
+  }
+
+  return {
+    personaName: personaName || fallbackPersona.name || "",
+    personaDesignation,
+    personaDepartment,
+    script,
+  };
+}
+
+function parseHqLocationMarkdown(markdown = "") {
+  const lines = splitMarkdownLines(markdown);
+  for (const line of lines) {
+    const match = line.match(/hq\s*location\s*[:=]\s*(.+)/i);
+    if (match && match[1]) return match[1].trim();
+  }
+  return lines[0] || "";
+}
+
+function parseRevenueSectorMarkdown(markdown = "", fallbackCompany = "") {
+  const lines = splitMarkdownLines(markdown);
+  const result = {
+    company_name: "",
+    revenue_estimate: "",
+    industry_sector: "",
+  };
+  lines.forEach((line) => {
+    if (/^company\s*[:=]/i.test(line)) {
+      result.company_name = line.replace(/^company\s*[:=]\s*/i, "").trim();
+    } else if (/^revenue\s*[:=]/i.test(line)) {
+      result.revenue_estimate = line.replace(/^revenue\s*[:=]\s*/i, "").trim();
+    } else if (/^sector\s*[:=]/i.test(line) || /^industry\s*[:=]/i.test(line)) {
+      result.industry_sector = line.replace(/^(sector|industry)\s*[:=]\s*/i, "").trim();
+    }
+  });
+  if (!result.company_name) result.company_name = fallbackCompany || "";
+  return result;
+}
+
+function parseTopNewsMarkdown(markdown = "") {
+  const lines = stripMarkdownFences(markdown)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const items = [];
+  let pending = null;
+
+  const flushPending = () => {
+    if (pending && pending.title) {
+      items.push({ title: pending.title, summary: pending.summary || "" });
+    }
+    pending = null;
+  };
+
+  lines.forEach((raw) => {
+    const line = raw.replace(/^[-*]\s*/, "").replace(/^\d+[\).\s]+/, "").trim();
+    const kv = parseKeyValueSegments(line);
+    const title = kv.title || kv.headline || "";
+    const summary = kv.summary || kv.description || kv.desc || "";
+
+    if (title && summary) {
+      flushPending();
+      items.push({ title, summary });
+      return;
+    }
+
+    if (title) {
+      flushPending();
+      pending = { title, summary: "" };
+      return;
+    }
+
+    if (summary && pending && !pending.summary) {
+      pending.summary = summary;
+      flushPending();
+      return;
+    }
+
+    const titleMatch = line.match(/^title\s*[:=]\s*(.+)$/i);
+    const summaryMatch = line.match(/^(summary|description)\s*[:=]\s*(.+)$/i);
+    if (titleMatch) {
+      flushPending();
+      pending = { title: titleMatch[1].trim(), summary: "" };
+      return;
+    }
+    if (summaryMatch && pending && !pending.summary) {
+      pending.summary = summaryMatch[2].trim();
+      flushPending();
+      return;
+    }
+  });
+
+  flushPending();
+  return items;
+}
+
+function parseTargetCompaniesMarkdown(markdown = "") {
+  const lines = stripMarkdownFences(markdown)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const companies = [];
+  lines.forEach((raw) => {
+    const line = raw.replace(/^[-*]\s*/, "").replace(/^\d+[\).\s]+/, "").trim();
+    if (!line) return;
+    const kv = parseKeyValueSegments(line);
+    const name = kv.name || kv.company || "";
+    const website = kv.website || kv.url || kv.site || "";
+    const revenue = kv.revenue || kv.revenue_estimate || "";
+    const notes = kv.notes || kv.note || kv.summary || "";
+    if (name) {
+      companies.push({
+        name,
+        website,
+        revenue,
+        notes,
+      });
+    }
+  });
+  return companies;
+}
+
+function parseMarkdownTable(markdown = "") {
+  const clean = stripMarkdownFences(markdown);
+  const lines = clean
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return { headers: [], rows: [] };
+  const headerIdx = lines.findIndex((line) => /^\|/.test(line) && line.includes("|"));
+  if (headerIdx === -1 || headerIdx + 1 >= lines.length) return { headers: [], rows: [] };
+  const headerLine = lines[headerIdx];
+  const separatorLine = lines[headerIdx + 1];
+  if (!/^-*:?[-| ]+$/.test(separatorLine.replace(/\|/g, ""))) {
+    return { headers: [], rows: [] };
+  }
+  const headers = headerLine
+    .split("|")
+    .map((h) => h.trim())
+    .filter(Boolean);
+  if (!headers.length) return { headers: [], rows: [] };
+  const rowLines = lines.slice(headerIdx + 2).filter((l) => l.includes("|"));
+  const rows = rowLines.map((line) => {
+    const cells = line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((_, idx) => idx > 0 && idx <= headers.length);
+    const row = {};
+    headers.forEach((h, idx) => {
+      row[h] = cells[idx] || "";
+    });
+    return row;
+  });
+  return { headers, rows };
 }
 
 function buildZoomInfoSearchLink(persona, companyName) {
@@ -691,19 +1292,10 @@ Guidelines:
 - If revenue is unavailable, leave the revenue field as an empty string.
 - Keep notes to one concise sentence explaining the fit.
 
-Respond in STRICT JSON with this shape (no Markdown fences, no commentary):
-{
-  "companies": [
-    {
-      "name": "Company name",
-      "website": "https://official.website",
-      "revenue": "Most recent annual revenue or range, or empty string if unknown",
-      "notes": "One sentence on why the company is a fit"
-    }
-  ]
-}`;
+Return markdown only as bullet points (no code fences). Use this format for each company:
+- Name=<Company>; Website=<official URL>; Revenue=<revenue or empty>; Notes=<one-line fit reason>`;
 
-  const resp = await callGeminiWithRetry(prompt, {
+  const resp = await callLlmWithRetry(prompt, {
     generationConfig: {
       temperature: 0.4,
       maxOutputTokens: 100000,
@@ -714,13 +1306,21 @@ Respond in STRICT JSON with this shape (no Markdown fences, no commentary):
     return { error: resp.error, details: resp.details };
   }
 
-  const { parsed, rawText } = parseModelJsonResponse(resp);
+  const rawText = typeof resp.text === "string" ? resp.text : "";
+  let companies = parseTargetCompaniesMarkdown(rawText);
 
-  if (!parsed || !Array.isArray(parsed.companies)) {
-    return { error: "Model did not return a structured company list.", details: rawText || null };
+  if (!companies.length) {
+    const { parsed } = parseModelJsonResponse(resp);
+    if (parsed && Array.isArray(parsed.companies)) {
+      companies = parsed.companies;
+    }
   }
 
-  const companies = normalizeTargetCompanies(parsed.companies);
+  if (!companies.length) {
+    return { error: "Model did not return a company list.", details: rawText || null };
+  }
+
+  companies = normalizeTargetCompanies(companies);
   return { ok: true, companies };
 }
 
@@ -751,8 +1351,8 @@ function composeExportPrompt(columns, entries, format) {
 
   const formatInstruction =
     format === "md"
-      ? "Provide a Markdown table string in the field `markdownTable`."
-      : "Ensure the JSON rows can be used to build an .xlsx file.";
+      ? "Return a markdown table with headers exactly matching the column headers below. Also include an optional line `Notes: ...` after the table if you want to add a note."
+      : "Return a markdown table with headers exactly matching the column headers below. We will parse it into .xlsx.";
 
   return `You are helping prepare research data for export.
 
@@ -764,23 +1364,17 @@ The research entries are provided as JSON below. Each entry may include nested d
 Research entries JSON:
 ${datasetJson}
 
-Respond in strict JSON with this shape:
-{
-  "rows": [
-    {
-      "<Header 1>": "cell value",
-      "<Header 2>": "cell value"
-    }
-  ],
-  "notes": "optional short quality notes or considerations",
-  "markdownTable": "optional markdown table representing all rows"
-}
+Return markdown only (no code fences) in this structure:
+| <Header 1> | <Header 2> | ... |
+| --- | --- | ... |
+| row 1 col 1 | row 1 col 2 | ... |
+| row 2 col 1 | row 2 col 2 | ... |
+Notes: <optional short quality notes or considerations>
 
-- The \`rows\` array must contain one object per research entry in the same order they were supplied.
-- Each row object must include every header and only those headers.
-- Use multiline strings where helpful (they will be preserved).
-- ${formatInstruction}
-`;
+- Keep the row order aligned to the research entries provided.
+- Every header must appear and only those headers.
+- Use multiline cells where helpful (they will be preserved).
+- ${formatInstruction}`;
 }
 
 function ensureRowValues(row, columns) {
@@ -1389,24 +1983,27 @@ Location hint to respect: ${normalizedLocationHint || "None provided (use global
 
 Requirements:
 - If a location hint is provided, interpret "headquarters" as the main registered office for that country/region (e.g., India HQ when the hint is India). Only return an address inside that geography.
-- Use Google Search to gather the latest authoritative mentions of the headquarters address, favoring queries that include the location hint.
-- Then call the Google Maps tool to pull the place details, coordinates, and formatted address so the answer is grounded in a real map listing.
+- Use browser search to gather the latest authoritative mentions of the headquarters address, favoring queries that include the location hint.
+- If mapping details are needed, infer them from the search results (no dedicated maps tool available).
 - If there are conflicting sources, explain why the selected HQ is most accurate.
 
-Respond strictly in JSON:
-{
-  "hq_location": "City, State/Region, Country"
-}
-`;
+Return markdown only. Respond with a single line in this exact format (no extra text, no code fences):
+HQ Location: City, State/Region, Country`;
 
   try {
-    const resp = await callGeminiWithRetry(prompt, {
+    const resp = await callLlmWithRetry(prompt, {
+      model: GROQ_COMPOUND_MINI_MODEL,
+      secondaryModel: GROQ_COMPOUND_MINI_MODEL,
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 9000,
+        maxOutputTokens: 200,
         
       },
-      tools: [{ google_search: {} }, { googleMaps: {} }],
+      compoundCustom: {
+        tools: {
+          enabled_tools: ["web_search"],
+        },
+      },
     });
 
     if (resp.error) {
@@ -1414,32 +2011,21 @@ Respond strictly in JSON:
       return { location: "", metadata: null, rawText: "", error: resp.error };
     }
 
-    const { parsed, rawText } = parseModelJsonResponse(resp);
+    const rawText = typeof resp.text === "string" ? resp.text : "";
+    const location = parseHqLocationMarkdown(rawText);
 
-    const structured = parsed && typeof parsed === "object" ? parsed : null;
-    if (!structured) {
+    if (!location) {
       return {
         location: "",
         metadata: null,
-        rawText,
-        error: "Headquarters lookup returned no structured JSON.",
-      };
-    }
-
-    const resolvedLocation = resolveLocationFromStructured(structured);
-
-    if (!resolvedLocation) {
-      return {
-        location: "",
-        metadata: structured,
         rawText,
         error: "Headquarters lookup did not include a location.",
       };
     }
 
     return {
-      location: resolvedLocation,
-      metadata: structured,
+      location,
+      metadata: null,
       rawText,
     };
   } catch (err) {
@@ -1463,12 +2049,13 @@ function summarizePersonasForTelepitch(personas = []) {
     .join("\n");
 }
 
-function buildTelephonicPitchPrompt({ personas, company, location, product, docsText, pitchFromCompany }) {
-  const personaSummary = summarizePersonasForTelepitch(personas);
+function buildTelephonicPitchPrompt({ persona = {}, company, location, product, docsText, pitchFromCompany }) {
+  const personaName = persona.name || persona.personaName || persona.persona_name || "the persona";
+  const designation = persona.designation || persona.personaDesignation || persona.persona_designation || "";
+  const department = persona.department || persona.personaDepartment || persona.persona_department || "";
   const pitchingOrg = (pitchFromCompany && pitchFromCompany.trim()) || "your company";
   const prospectLabel = company || "the target company";
-  const personaCount = Array.isArray(personas) ? personas.length : 0;
-  return `You are a helpful assistant. Generate a concise telephonic sales pitch for the following:
+  return `You are a helpful assistant. Generate a concise telephonic sales pitch for one persona.
   Perspective:
       - You represent ${pitchingOrg}. You are pitching ${prospectLabel}, who is the prospect.
       - Do not flip the roles: ${pitchingOrg} is the seller, ${prospectLabel} is the buyer.
@@ -1488,36 +2075,21 @@ function buildTelephonicPitchPrompt({ personas, company, location, product, docs
   Location: ${location || "N/A"}
   Product: ${product}
   Pitching organization (you): ${pitchingOrg}
-
-  Known personas:
-  ${personaSummary || "None provided. Infer from context."}
+  Persona: ${personaName}${designation ? ` | Title: ${designation}` : ""}${department ? ` | Department: ${department}` : ""}
 
   Context docs (first 4000 chars each):
   ${docsText || "(no docs provided)"}
 
-  Output JSON in this structure EXACTLY. Return one entry per persona in the same order provided. Include persona_name in every entry so it maps back cleanly. Do not include \`\`\`json markdown wrappers.
-  Number of personas to cover: ${personaCount || "0"} (must match telephonic_pitches array length).
-  {
-    "telephonic_pitches":[
-      {
-        "persona_name":"",
-        "full_pitch":""
-      }
-    ]
-  }
-  Example with two personas:
-  {
-    "telephonic_pitches":[
-      {"persona_name":"<Persona 1 Name>","full_pitch":""},
-      {"persona_name":"<Persona 2 Name>","full_pitch":""}
-    ]
-  }
-
-  Keep each section crisp and action-oriented.`;
+  Return markdown only in this exact format (no headings, no code fences):
+  Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
+  Telephonic Pitch:
+  <45-60 second script here>`;
 }
 
-function buildPersonaEmailsPrompt({ personas, company, location, product, docsText, pitchFromCompany }) {
-  const personaSummary = summarizePersonasForTelepitch(personas);
+function buildPersonaEmailsPrompt({ persona = {}, company, location, product, docsText, pitchFromCompany }) {
+  const personaName = persona.name || persona.personaName || persona.persona_name || "the persona";
+  const designation = persona.designation || persona.personaDesignation || persona.persona_designation || "";
+  const department = persona.department || persona.personaDepartment || persona.persona_department || "";
   const pitchingOrg = (pitchFromCompany && pitchFromCompany.trim()) || "your company";
   const prospectLabel = company || "the target company";
   return `You are a helpful assistant. Generate outbound email drafts for each persona.
@@ -1525,19 +2097,10 @@ Prospect company: ${prospectLabel}
 Pitching organization (you): ${pitchingOrg}
 Location: ${location || "N/A"}
 Product: ${product}
-
-Known personas:
-${personaSummary || "None provided. Infer from context."}
+ Persona: ${personaName}${designation ? ` | Title: ${designation}` : ""}${department ? ` | Department: ${department}` : ""}
 
 Context docs (first 4000 chars each):
 ${docsText || "(no docs provided)"}
-
-Output JSON exactly. Create one entry per persona in the same order provided:
-{
-  "persona_emails": [
-    {"persona_name": "", "subject": "", "body": ""}
-  ]
-}
 
 Rules:
 - ${prospectLabel} is the prospect. Every email must be written from ${pitchingOrg}'s perspective pitching ${prospectLabel} on ${product}. Never reverse these roles.
@@ -1565,7 +2128,13 @@ Rules:
 
       Sincerely,
 
-      [Your Name] [Your Title]`;
+      [Your Name] [Your Title]
+
+Return markdown only in this exact format (no headings, no code fences):
+Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
+Subject: <subject line>
+Body:
+<short email body>`;
 }
 
 function buildEmailRevisionPrompt({ persona = {}, company, location, product, baseEmail = {}, instructions = "", pitchingOrg }) {
@@ -1604,8 +2173,11 @@ Rules:
 - Keep the subject crisp; keep the body short and skimmable.
 - Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"} on ${product || "the product"}.
 
-Return JSON ONLY:
-{"subject": "", "body": ""}`;
+Return markdown only in this exact format (no headings, no code fences):
+Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
+Subject: <subject line>
+Body:
+<short email body>`;
 }
 
 function buildPitchRevisionPrompt({ persona = {}, company, location, product, basePitch = {}, instructions = "", pitchingOrg }) {
@@ -1647,10 +2219,10 @@ Instructions:
 - Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"}.
 - Do not split the response into labeled sections (call goal, opener, CTA, etc.); keep everything woven into one tight script.
 
-Return JSON ONLY:
-{
-  "script": ""
-}`;
+Return markdown only in this exact format (no headings, no code fences):
+Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
+Telephonic Pitch:
+<45-60 second script>`;
 }
 
 function deriveTelephonicPitchArray(payload, depth = 0) {
@@ -1865,107 +2437,131 @@ function extractTelephonicPitchResponse(resp, personas) {
 
 async function generateTelephonicPitchScripts({ personas, company, location, product, docsText, pitchFromCompany }) {
   const pitchingCompany = (pitchFromCompany && pitchFromCompany.trim()) || (await loadPitchingCompany());
-  const prompt = buildTelephonicPitchPrompt({
-    personas,
-    company,
-    location,
-    product,
-    docsText,
-    pitchFromCompany: pitchingCompany,
-  });
   const attempts = [];
+  const pitches = [];
 
-  const runAttempt = async (label) => {
+  const tasks = (personas || []).map(async (persona, idx) => {
+    const prompt = buildTelephonicPitchPrompt({
+      persona,
+      company,
+      location,
+      product,
+      docsText,
+      pitchFromCompany: pitchingCompany,
+    });
+
+    const generationConfig = {
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+    };
+
     try {
-      const generationConfig = {
-        temperature: 0.2,
-        maxOutputTokens: 4096,
-      };
-      const teleResp = await callGeminiWithRetry(prompt, {
+      const teleResp = await callLlmWithRetry(prompt, {
+        model: LLAMA_33_MODEL,
+        secondaryModel: LLAMA_33_MODEL,
         generationConfig,
-        tools: [{ google_search: {} }],
       });
 
       if (teleResp.error) {
         attempts.push({
-          label,
+          label: `persona_${idx + 1}`,
           error: teleResp.error,
-          details: summarizeTelephonicDebugInfo(teleResp.details),
+          details: summarizeTelephonicDebugInfo(teleResp.details || teleResp.text || teleResp.raw),
         });
-        return null;
+        pitches[idx] = normalizeTelephonicPitchEntry(null, idx, personas);
+        return;
       }
 
-      const parsed = extractTelephonicPitchResponse(teleResp, personas);
-      if (parsed.pitches.length) {
-        return parsed.pitches;
-      }
-      attempts.push({
-        label,
-        error: parsed.error || "Model response missing telephonic pitches.",
-        details: summarizeTelephonicDebugInfo(parsed.rawText || teleResp.text || teleResp.raw),
-      });
-      return null;
+      const rawText = typeof teleResp.text === "string" ? teleResp.text : "";
+      const parsed = parseTelephonicPitchMarkdown(rawText, persona);
+      const script = parsed.script || rawText;
+      const normalized = normalizeTelephonicPitchEntry(
+        {
+          persona_name: parsed.personaName,
+          persona_designation: parsed.personaDesignation,
+          persona_department: parsed.personaDepartment,
+          full_pitch: script,
+        },
+        idx,
+        personas
+      );
+      pitches[idx] = normalized;
     } catch (err) {
       attempts.push({
-        label,
+        label: `persona_${idx + 1}`,
         error: err?.message || String(err),
       });
-      return null;
+      pitches[idx] = normalizeTelephonicPitchEntry(null, idx, personas);
     }
-  };
+  });
 
-  const structuredResult = await runAttempt("json-output");
-  if (structuredResult && structuredResult.length) {
-    return { pitches: structuredResult, attempts };
-  }
+  await Promise.all(tasks);
 
-  const fallbackResult = await runAttempt("text-output");
-  if (fallbackResult && fallbackResult.length) {
-    return { pitches: fallbackResult, attempts };
-  }
+  const hasContent = pitches.some((p) => p && p.script);
+  const error =
+    hasContent || !attempts.length
+      ? ""
+      : attempts[attempts.length - 1]?.error || "Unable to generate telephonic pitches.";
 
-  const lastError =
-    attempts.length && attempts[attempts.length - 1].error
-      ? attempts[attempts.length - 1].error
-      : "Unable to generate telephonic pitches.";
-
-  return { pitches: [], error: lastError, attempts };
+  return { pitches, error, attempts };
 }
 
 async function generatePersonaEmails({ personas, company, location, product, docsText, pitchFromCompany }) {
   const pitchingCompany = (pitchFromCompany && pitchFromCompany.trim()) || (await loadPitchingCompany());
-  const prompt = buildPersonaEmailsPrompt({
-    personas,
-    company,
-    location,
-    product,
-    docsText,
-    pitchFromCompany: pitchingCompany,
+
+  const personaEmails = [];
+  const attempts = [];
+
+  const tasks = (personas || []).map(async (persona, idx) => {
+    const prompt = buildPersonaEmailsPrompt({
+      persona,
+      company,
+      location,
+      product,
+      docsText,
+      pitchFromCompany: pitchingCompany,
+    });
+
+    const resp = await callLlmWithRetry(prompt, {
+      model: LLAMA_33_MODEL,
+      secondaryModel: LLAMA_33_MODEL,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 12000,
+      },
+    });
+
+    if (resp.error) {
+      attempts.push({ label: `persona_${idx + 1}`, error: resp.error, details: resp.details || resp.text || "" });
+      personaEmails[idx] = normalizePersonaEmails(personas, [])[idx] || {
+        personaName: persona?.name || `Persona ${idx + 1}`,
+        personaDesignation: persona?.designation || "",
+        personaDepartment: persona?.department || "",
+        subject: "",
+        body: "",
+      };
+      return;
+    }
+
+    const rawText = typeof resp.text === "string" ? resp.text : "";
+    const parsed = parsePersonaEmailMarkdown(rawText, persona);
+    personaEmails[idx] = {
+      personaName: parsed.personaName || persona?.name || `Persona ${idx + 1}`,
+      personaDesignation: parsed.personaDesignation || persona?.designation || "",
+      personaDepartment: parsed.personaDepartment || persona?.department || "",
+      subject: parsed.subject || "",
+      body: parsed.body || "",
+    };
   });
 
-  const resp = await callGeminiWithRetry(prompt, {
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 12000,
-    },
-    tools: [{ google_search: {} }],
-  });
+  await Promise.all(tasks);
 
-  if (resp.error) {
-    return { personaEmails: [], error: resp.error, rawText: resp.details || resp.text || "" };
-  }
+  const error =
+    personaEmails.some((e) => e && (e.subject || e.body)) || !attempts.length
+      ? ""
+      : attempts[attempts.length - 1]?.error || "Model did not return valid emails.";
 
-  const { parsed, rawText } = parseModelJsonResponse(resp);
-  if (!parsed) {
-    return { personaEmails: [], error: "Model did not return valid JSON.", rawText };
-  }
-
-  const personaEmails = normalizePersonaEmails(personas, parsed.persona_emails || parsed.personaEmails || []);
-  if (!personaEmails.length) {
-    return { personaEmails: [], error: "Model response missing persona_emails array.", rawText };
-  }
-
-  return { personaEmails, rawText };
+  return { personaEmails, rawText: "", attempts, error };
 }
 
 function normalizePersonas(rawPersonas, companyName) {
@@ -2063,7 +2659,9 @@ async function revisePersonaEmail({ persona, email, company, product, location, 
       pitchingOrg,
     });
 
-    const resp = await callGeminiWithRetry(prompt, {
+    const resp = await callLlmWithRetry(prompt, {
+      model: LLAMA_33_MODEL,
+      secondaryModel: LLAMA_33_MODEL,
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: 12000,
@@ -2074,15 +2672,15 @@ async function revisePersonaEmail({ persona, email, company, product, location, 
       return { error: resp.error, details: resp.details };
     }
 
-    const { parsed, rawText } = parseModelJsonResponse(resp);
-    if (!parsed) return { error: "Model did not return valid JSON.", rawText };
+    const rawText = typeof resp.text === "string" ? resp.text : "";
+    const parsed = parsePersonaEmailMarkdown(rawText, persona);
 
     const draft = {
       personaName: persona?.name || persona?.personaName || persona?.persona_name || "",
       personaDesignation: persona?.designation || persona?.personaDesignation || persona?.persona_designation || "",
       personaDepartment: persona?.department || persona?.personaDepartment || persona?.persona_department || "",
-      subject: (parsed.subject && String(parsed.subject)) || "",
-      body: (parsed.body && String(parsed.body)) || "",
+      subject: parsed.subject || "",
+      body: parsed.body || "",
     };
 
     return { draft, rawText };
@@ -2121,7 +2719,9 @@ async function revisePersonaPitch({ persona, pitch, company, product, location, 
       pitchingOrg,
     });
 
-    const resp = await callGeminiWithRetry(prompt, {
+    const resp = await callLlmWithRetry(prompt, {
+      model: LLAMA_33_MODEL,
+      secondaryModel: LLAMA_33_MODEL,
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: 12000,
@@ -2132,10 +2732,18 @@ async function revisePersonaPitch({ persona, pitch, company, product, location, 
       return { error: resp.error, details: resp.details };
     }
 
-    const { parsed, rawText } = parseModelJsonResponse(resp);
-    if (!parsed) return { error: "Model did not return valid JSON.", rawText };
-
-    const normalized = normalizeTelephonicPitchEntry(parsed, 0, [persona || {}]);
+    const rawText = typeof resp.text === "string" ? resp.text : "";
+    const parsed = parseTelephonicPitchMarkdown(rawText, persona);
+    const normalized = normalizeTelephonicPitchEntry(
+      {
+        persona_name: parsed.personaName,
+        persona_designation: parsed.personaDesignation,
+        persona_department: parsed.personaDepartment,
+        full_pitch: parsed.script,
+      },
+      0,
+      [persona || {}]
+    );
     return {
       draft: normalized,
       rawText,
@@ -2199,7 +2807,21 @@ function buildBriefHtmlFromOverview({ companyName, hqDisplay, revenue, industry,
   return briefHtml;
 }
 
-async function generateBriefOverview({ company, location, product, docsText }) {
+function normalizeTopNewsEntries(topNews = []) {
+  if (!Array.isArray(topNews)) return [];
+  return topNews
+    .map((item) => {
+      const title = item?.title || item?.headline || item?.name || "";
+      const summary = item?.summary || item?.description || item?.details || "";
+      return {
+        title: title ? String(title) : "",
+        summary: summary ? String(summary) : "",
+      };
+    })
+    .filter((entry) => entry.title || entry.summary);
+}
+
+async function fetchRevenueAndSectorOverview({ company, location, product, docsText }) {
   const prompt = `You are a helpful assistant. Research the target company and return concise commercial context.
 Company: ${company}
 Location: ${location || "N/A"}
@@ -2208,37 +2830,117 @@ Product: ${product}
 Context docs (first 4000 chars each):
 ${docsText || "(no docs provided)"}
 
-Provide JSON with: company_name, revenue_estimate (realistic string), industry_sector, and top_5_news (array of {"title","summary"}).
-Do not include markdown fences.`;
+Return markdown only with exactly three lines (no headings, no code fences):
+Company: <company name>
+Revenue: <realistic revenue string or "Unknown">
+Sector: <industry sector>`;
 
-  const resp = await callGeminiWithRetry(prompt, {
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 6000,
-    },
-    tools: [{ google_search: {} }],
-  });
+  try {
+    const resp = await callLlmWithRetry(prompt, {
+      model: GROQ_COMPOUND_MINI_MODEL,
+      secondaryModel: GROQ_COMPOUND_MINI_MODEL,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 200,
+      },
+      compoundCustom: {
+        tools: {
+          enabled_tools: ["web_search"],
+        },
+      },
+    });
 
-  if (resp.error) {
-    return { error: resp.error + (resp.details ? " Details: " + JSON.stringify(resp.details) : ""), attempts: resp.details || [] };
+    if (resp.error) {
+      return { error: resp.error + (resp.details ? " Details: " + JSON.stringify(resp.details) : ""), attempts: resp.details || [] };
+    }
+
+    const rawText = typeof resp.text === "string" ? resp.text : "";
+    const parsed = parseRevenueSectorMarkdown(rawText, company);
+    if (!parsed || typeof parsed !== "object") {
+      return { error: "Model did not return valid markdown.", rawText };
+    }
+
+    const overview = {
+      company_name: parsed.company_name || company || "",
+      revenue_estimate: parsed.revenue_estimate || parsed.revenue || "",
+      industry_sector: parsed.industry_sector || parsed.industrySector || parsed.industry || "",
+    };
+
+    return { overview, rawText };
+  } catch (err) {
+    return { error: err?.message || String(err) };
   }
+}
 
-  const { parsed, rawText } = parseModelJsonResponse(resp);
-  if (!parsed) {
-    return { error: "Model did not return valid JSON.", rawText };
+async function fetchRecentNewsEntries({ company, location, docsText }) {
+  const prompt = `You are a helpful assistant. Find the five most recent, relevant news headlines about the target company.
+Company: ${company}
+Location context: ${location || "N/A"}
+
+Context docs (first 4000 chars each):
+${docsText || "(no docs provided)"}
+
+Return markdown only. Provide up to 5 bullet items in this format (no code fences):
+- Title=<headline>; Summary=<one-sentence summary>`;
+
+  try {
+    const resp = await callLlmWithRetry(prompt, {
+      model: GROQ_COMPOUND_MINI_MODEL,
+      secondaryModel: GROQ_COMPOUND_MINI_MODEL,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 4000,
+      },
+    });
+
+    if (resp.error) {
+      return { error: resp.error + (resp.details ? " Details: " + JSON.stringify(resp.details) : ""), attempts: resp.details || [] };
+    }
+
+    const rawText = typeof resp.text === "string" ? resp.text : "";
+    let topNews = parseTopNewsMarkdown(rawText);
+
+    if (!topNews.length) {
+      const { parsed, rawText: parsedRaw } = parseModelJsonResponse(resp);
+      const fallbackParsed =
+        (Array.isArray(parsed?.top_5_news) && parsed.top_5_news) ||
+        (Array.isArray(parsed?.top_news) && parsed.top_news) ||
+        (Array.isArray(parsed?.news) && parsed.news) ||
+        [];
+      topNews = fallbackParsed;
+    }
+
+    return { topNews: normalizeTopNewsEntries(topNews), rawText };
+  } catch (err) {
+    return { error: err?.message || String(err) };
   }
+}
 
-  const topNews =
-    (Array.isArray(parsed.top_5_news) && parsed.top_5_news) ||
-    (Array.isArray(parsed.top_news) && parsed.top_news) ||
-    [];
+async function generateBriefOverview({ company, location, product, docsText }) {
+  const [financialResult, newsResult] = await Promise.all([
+    fetchRevenueAndSectorOverview({ company, location, product, docsText }),
+    fetchRecentNewsEntries({ company, location, docsText }),
+  ]);
 
   const overview = {
-    company_name: parsed.company_name || company || "",
-    revenue_estimate: parsed.revenue_estimate || parsed.revenue || "",
-    industry_sector: parsed.industry_sector || parsed.industrySector || parsed.industry || "",
-    top_5_news: topNews,
+    company_name: financialResult?.overview?.company_name || company || "",
+    revenue_estimate: financialResult?.overview?.revenue_estimate || "",
+    industry_sector: financialResult?.overview?.industry_sector || "",
+    top_5_news: Array.isArray(newsResult?.topNews) ? newsResult.topNews : [],
   };
+
+  const rawSegments = [];
+  if (financialResult?.rawText) rawSegments.push(financialResult.rawText);
+  if (newsResult?.rawText) rawSegments.push(newsResult.rawText);
+  const rawText = rawSegments.join("\n\n---\n\n");
+
+  const errors = [];
+  if (financialResult?.error) errors.push(`overview: ${financialResult.error}`);
+  if (newsResult?.error) errors.push(`news: ${newsResult.error}`);
+
+  if (errors.length) {
+    return { overview, rawText, error: errors.join(" | ") };
+  }
 
   return { overview, rawText };
 }
@@ -2247,105 +2949,39 @@ async function generatePersonaBrief({ company, location, product, docsText, runI
   const pitchFromCompany = await loadPitchingCompany();
   const pitchingOrg = pitchFromCompany || "your company";
   const prospectLabel = company || "the target company";
-  const prompt = `You are a helpful assistant. Generate buying personas for the company and outreach-ready messaging.
-Prospect company: ${prospectLabel}
+  const prompt = `You are a helpful assistant. Generate buying personas for ${prospectLabel}. Focus only on personas involved in purchasing ${product}.
 Pitching organization (you): ${pitchingOrg}
 Location: ${location || "N/A"}
 Product: ${product}
-
 Context docs (first 4000 chars each):
 ${docsText || "(no docs provided)"}
 
-Output JSON exactly:
-{
-  "company_name": "",
-  "key_personas": [
-    {
-      "name": "",
-      "designation": "",
-      "department": "",
-      "zoominfo_link": ""
-    }
-  ],
-  "telephonic_pitches": [{"full_pitch":""}]
-  ,
-  "persona_emails": [
-    {"persona_name": "", "subject": "", "body": ""}
-  ]
-}
+Return markdown only. Provide one bullet per persona using this format (no headings, no code fences):
+- Name=<Full name>; Title=<Job title>; Department=<Department>; SearchLink=<ZoomInfo/LinkedIn style Google search link>`;
 
-Rules:
-- ${prospectLabel} is the prospect. Every email and telephonic script must be written from ${pitchingOrg}'s perspective pitching ${prospectLabel} on ${product}. Never reverse these roles.
-- Only return personas relevant to ${product} purchase decisions.
-- Emails must include a crisp subject and concise, sales-forward body tailored to that persona. Make the email very short, crisp and visually appealing with numbers and statistics from the documents uploaded. Here's an example of an email template:
-    Subject: PVR INOX: Guaranteed 90% Faster Content Delivery with IBM Aspera.
-
-      Dear [Name],
-
-      PVR INOX's scale (over 1,700 screens) requires guaranteed, instantaneous content flow. Current transfer methods are slow, unreliable, and expensive.
-
-      IBM Aspera changes the math:
-
-      Speed: A 100GB DCP asset transfers in under 30 minutes, down from the standard 4-8 hours. This is a 90% time savings.
-
-      Efficiency: We guarantee 95%+ network utilization, maximizing the ROI on your current bandwidth investment.
-
-      Risk: Near-zero transfer failure, eliminating costly re-sends and critical release delays.
-
-      Precedent: Major global studio 'X' leveraged Aspera to cut their distribution window by 50%.
-
-      We eliminate content bottlenecks, securing your revenue and saving substantial operational costs.
-
-      Are you available for a sharp 10-minute ROI discussion this week?
-
-      Sincerely,
-
-      [Your Name] [Your Title]
-
-- Telephonic pitches should be 45-60 seconds. Here's an example of a telephonic pitch: "Hi [Name], this is [Your Name] calling from [Your Company]. Am I catching you at a good time for quick minute?
-      Great, thank you! I'll keep this really short. I work with companies in the [Target company sector]- helping them [your product feature verbs].
-      You might have heard of [Your Product] - it's a solution that helps [Your Product Features]. 
-      For a company like yours, where you're [Target Company Pain Point verbs], [Your Product] can [Your Product's Effects and Improvements].
-      I'd love to set up a short 20 minute demo with our [Relevant Team from Your Company]. 
-      They can walk you through how [Target Company] could use it for [Your Product's Effects and Improvements]. Would that work for you sometime this week?" 
-- Include a ZoomInfo or LinkedIn style Google search link for each persona (omit "google search:" text).`;
-
-  const resp = await callGeminiWithRetry(prompt, {
+  const resp = await callLlmWithRetry(prompt, {
+    model: LLAMA_33_MODEL,
+    secondaryModel: LLAMA_33_MODEL,
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 12000,
+      maxOutputTokens: 6000,
     },
-    tools: [{ google_search: {} }],
   });
 
   if (resp.error) {
     return { error: resp.error + (resp.details ? " Details: " + JSON.stringify(resp.details) : ""), attempts: resp.details || [] };
   }
 
-  const { parsed, rawText } = parseModelJsonResponse(resp);
-  if (!parsed) {
-    return { error: "Model did not return valid JSON.", rawText };
-  }
+  const rawText = typeof resp.text === "string" ? resp.text : "";
+  const personas = parsePersonasFromMarkdown(rawText, company);
 
-  const rawPersonas = Array.isArray(parsed.key_personas) ? parsed.key_personas : [];
-  const personas = normalizePersonas(rawPersonas, parsed.company_name || company);
-  const personaEmailsFromPersonaBrief = normalizePersonaEmails(
-    rawPersonas,
-    parsed.persona_emails || parsed.personaEmails || []
-  );
-  const telephonicFromPersonaBrief = normalizeTelephonicPitches(parsed, personas);
-  const initialEmail = derivePrimaryEmail(parsed, personaEmailsFromPersonaBrief);
+  if (!Array.isArray(personas) || !personas.length) {
+    return { error: "Model did not return personas.", rawText };
+  }
 
   if (runId) {
     emitBriefPartialUpdate(runId, {
       personas,
-      personaEmails: personaEmailsFromPersonaBrief,
-      telephonicPitches: telephonicFromPersonaBrief.telephonicPitches,
-      telephonicPitchError: telephonicFromPersonaBrief.telephonicPitches.length
-        ? telephonicFromPersonaBrief.telephonicPitchError
-        : "",
-      telephonicPitchAttempts: telephonicFromPersonaBrief.telephonicPitchAttempts,
-      email: initialEmail,
     });
   }
 
@@ -2369,46 +3005,25 @@ Rules:
   if (runId) {
     emailPromise
       .then((res) => {
-        const personaEmails =
-          (res?.personaEmails && res.personaEmails.length ? res.personaEmails : personaEmailsFromPersonaBrief) || [];
-        const email = derivePrimaryEmail(parsed, personaEmails);
+        const personaEmails = Array.isArray(res?.personaEmails) ? res.personaEmails : [];
+        const email = derivePrimaryEmail({ persona_emails: personaEmails }, personaEmails);
         emitBriefPartialUpdate(runId, {
           personaEmails,
           email,
         });
       })
-      .catch(() => {
-        emitBriefPartialUpdate(runId, {
-          personaEmails: personaEmailsFromPersonaBrief,
-          email: initialEmail,
-        });
-      });
+      .catch(() => {});
 
     telephonicPromise
       .then((res) => {
-        const telephonicPitches =
-          (res?.pitches && res.pitches.length ? res.pitches : telephonicFromPersonaBrief.telephonicPitches) || [];
-        const telephonicPitchError =
-          res?.error ||
-          (!telephonicPitches.length ? telephonicFromPersonaBrief.telephonicPitchError : "") ||
-          "";
-        const telephonicPitchAttempts = res?.attempts || telephonicFromPersonaBrief.telephonicPitchAttempts || [];
+        const telephonicPitches = Array.isArray(res?.pitches) ? res.pitches : [];
         emitBriefPartialUpdate(runId, {
           telephonicPitches,
-          telephonicPitchError,
-          telephonicPitchAttempts,
+          telephonicPitchError: res?.error || "",
+          telephonicPitchAttempts: res?.attempts || [],
         });
       })
-      .catch((err) => {
-        const telephonicPitches = telephonicFromPersonaBrief.telephonicPitches || [];
-        const fallbackError = telephonicFromPersonaBrief.telephonicPitchError || "";
-        const errorMsg = err?.message || (err ? String(err) : "") || fallbackError;
-        emitBriefPartialUpdate(runId, {
-          telephonicPitches,
-          telephonicPitchError: errorMsg || (!telephonicPitches.length ? fallbackError : ""),
-          telephonicPitchAttempts: telephonicFromPersonaBrief.telephonicPitchAttempts || [],
-        });
-      });
+      .catch(() => {});
   }
 
   const [emailResult, telephonicResult] = await Promise.allSettled([emailPromise, telephonicPromise]);
@@ -2423,25 +3038,15 @@ Rules:
       ? telephonicResult.value
       : { pitches: [], error: telephonicResult.reason?.message || String(telephonicResult.reason), attempts: [] };
 
-  const personaEmails =
-    (resolvedEmailResult.personaEmails && resolvedEmailResult.personaEmails.length
-      ? resolvedEmailResult.personaEmails
-      : personaEmailsFromPersonaBrief) || [];
+  const personaEmails = Array.isArray(resolvedEmailResult.personaEmails) ? resolvedEmailResult.personaEmails : [];
+  const telephonicPitches = Array.isArray(resolvedTelephonicResult.pitches)
+    ? resolvedTelephonicResult.pitches
+    : [];
 
-  const telephonicPitches =
-    (resolvedTelephonicResult.pitches && resolvedTelephonicResult.pitches.length
-      ? resolvedTelephonicResult.pitches
-      : telephonicFromPersonaBrief.telephonicPitches) || [];
+  const telephonicPitchError = resolvedTelephonicResult.error || (!telephonicPitches.length ? "No telephonic pitch generated." : "") || "";
+  const telephonicPitchAttempts = resolvedTelephonicResult.attempts || [];
 
-  const telephonicPitchError =
-    resolvedTelephonicResult.error ||
-    (!telephonicPitches.length ? telephonicFromPersonaBrief.telephonicPitchError : "") ||
-    "";
-
-  const telephonicPitchAttempts =
-    resolvedTelephonicResult.attempts || telephonicFromPersonaBrief.telephonicPitchAttempts || [];
-
-  const email = derivePrimaryEmail(parsed, personaEmails);
+  const email = derivePrimaryEmail({ persona_emails: personaEmails }, personaEmails);
 
   return {
     personas,
@@ -2880,33 +3485,59 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             return;
           }
 
-          const prompt = composeExportPrompt(columns, filteredEntries, format);
-          const llmResult = await callGeminiWithRetry(prompt, {
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 4096,
-              responseMimeType: "application/json",
-            },
-          });
+  const prompt = composeExportPrompt(columns, filteredEntries, format);
+  const llmResult = await callLlmWithRetry(prompt, {
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 4096,
+    },
+  });
 
           if (llmResult.error) {
             sendResponse({ error: llmResult.error, details: llmResult.details });
             return;
           }
 
-          const { parsed, rawText } = parseModelJsonResponse(llmResult);
+          const rawText = typeof llmResult.text === "string" ? llmResult.text : "";
+          let notes = "";
+          let tableRows = [];
 
-          if (!parsed || !Array.isArray(parsed.rows)) {
+          const { headers: parsedHeaders, rows: parsedRows } = parseMarkdownTable(rawText);
+          if (parsedRows && parsedRows.length) {
+            tableRows = parsedRows;
+          }
+          const notesMatch = rawText.match(/Notes:\s*(.+)/i);
+          if (notesMatch && notesMatch[1]) {
+            notes = notesMatch[1].trim();
+          }
+
+          if (!tableRows.length) {
+            const { parsed } = parseModelJsonResponse(llmResult);
+            if (parsed && Array.isArray(parsed.rows)) {
+              tableRows = parsed.rows;
+              notes = parsed.notes || "";
+            }
+          }
+
+          if (!tableRows.length) {
             sendResponse({ error: "Model did not return structured rows for export.", details: rawText || null });
             return;
           }
 
-          const normalizedRows = parsed.rows.map((row) => ensureRowValues(row, columns));
+          const normalizedRows = tableRows.map((row) => ensureRowValues(row, columns));
           const headers = columns.map((col) => col.header);
 
-          let markdownTable = parsed.markdownTable || parsed.markdown || parsed.table;
-          if (format === "md" && !markdownTable) {
-            markdownTable = generateMarkdownFromRows(headers, normalizedRows);
+          let markdownTable = "";
+          if (format === "md") {
+            if (parsedHeaders && parsedHeaders.length) {
+              const body = normalizedRows
+                .map((row) => `| ${headers.map((h) => row[h] || "").join(" | ")} |`)
+                .join("\n");
+              const separator = `| ${headers.map(() => "---").join(" | ")} |`;
+              markdownTable = `| ${headers.join(" | ")} |\n${separator}${body ? `\n${body}` : ""}`;
+            } else {
+              markdownTable = generateMarkdownFromRows(headers, normalizedRows);
+            }
           }
 
           let base64Data = "";
@@ -2923,9 +3554,9 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             } else {
               exportLines.push(generateMarkdownFromRows(headers, normalizedRows));
             }
-            if (parsed.notes) {
+            if (notes) {
               exportLines.push("");
-              exportLines.push(`> ${parsed.notes}`);
+              exportLines.push(`> ${notes}`);
             }
             const markdownContent = exportLines.join("\n");
             base64Data = stringToBase64(markdownContent);
@@ -2945,7 +3576,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
               headers,
               rows: normalizedRows.slice(0, 10),
             },
-            notes: parsed.notes || "",
+            notes: notes || "",
             download: {
               format,
               mimeType,
@@ -2982,5 +3613,27 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   })();
   return true;
 });
+
+// Export selected LLM helpers for Node-based tests without affecting extension runtime.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    callGroqDirect,
+    callGroqWithRetry,
+    callGeminiDirect,
+    callGeminiWithRetryInternal,
+    callLlmWithRetry,
+    parseModelJsonResponse,
+    buildGroqMessages,
+    translateToolsToGroq,
+    parsePersonasFromMarkdown,
+    parsePersonaEmailMarkdown,
+    parseTelephonicPitchMarkdown,
+    parseRevenueSectorMarkdown,
+    parseHqLocationMarkdown,
+    parseTopNewsMarkdown,
+    parseTargetCompaniesMarkdown,
+    parseMarkdownTable,
+  };
+}
 
 })(); // end backgroundWebScope

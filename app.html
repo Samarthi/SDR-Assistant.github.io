@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI SDR Assistant</title>
+    <link rel="icon" type="image/png" href="logo-light.png" />
     <link
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
@@ -11,44 +12,114 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <div id="app">
-      <div id="topBar">
-        <button id="exportTrigger" type="button" class="primary">Export</button>
-        <h2>AI SDR Assistant</h2>
-      </div>
-      <div id="modeSwitcher" role="tablist" aria-label="Generation mode">
-        <button type="button" class="mode-tab active" role="tab" aria-selected="true" data-mode-tab="targetedBrief">
-          Targeted Brief Generation
-        </button>
-        <button type="button" class="mode-tab" role="tab" aria-selected="false" data-mode-tab="targetGeneration">
-          Target Generation
-        </button>
-      </div>
-      <div id="appLayout">
-        <aside id="historySidebar">
-          <div class="history-section" data-history-section="targetedBrief">
-            <h3>Research History</h3>
-            <button id="newResearch" type="button">New Research</button>
-            <div id="historyEmpty">No history yet. Run a brief to see it here.</div>
-            <div id="historyList" role="list"></div>
+    <div id="appShell">
+      <aside id="navRail" class="collapsed">
+        <div class="rail-compact">
+          <button id="railLogo" class="rail-btn rail-logo" aria-label="AI SDR Assistant">
+            <img src="logo-light.png" data-theme-logo data-logo-light="logo-light.png" data-logo-dark="logo-dark.png" alt="" />
+            <span class="rail-logo-hover-icon" aria-hidden="true">
+              <span class="sidebar-icon" aria-hidden="true"></span>
+            </span>
+          </button>
+          <div class="rail-separator"></div>
+          <button id="railNewResearch" class="rail-btn" aria-label="Start new research">
+            <span class="rail-icon" aria-hidden="true" data-feather="edit-3"></span>
+          </button>
+          <button id="railHistory" class="rail-btn" aria-label="Open search history">
+            <span class="rail-icon" aria-hidden="true" data-feather="search"></span>
+          </button>
+          <button
+            id="settingsTrigger"
+            class="rail-btn rail-settings"
+            type="button"
+            aria-label="Open settings"
+            data-settings-trigger
+          >
+            <span class="rail-icon" aria-hidden="true" data-feather="settings"></span>
+          </button>
+        </div>
+        <div class="history-expanded">
+          <div class="history-sidebar-header">
+            <div class="history-sidebar-logo">
+              <img src="logo-light.png" data-theme-logo data-logo-light="logo-light.png" data-logo-dark="logo-dark.png" alt="AI SDR Assistant" />
+            </div>
+            <h2 class="history-sidebar-title">AI SDR Assistant</h2>
+            <button
+              id="historyCollapse"
+              type="button"
+              aria-label="Close history sidebar"
+              aria-expanded="false"
+              aria-controls="historySidebarContent"
+            >
+              <span class="sidebar-icon" aria-hidden="true"></span>
+            </button>
           </div>
-          <div class="history-section" data-history-section="targetGeneration" hidden>
-            <h3>Target History</h3>
-            <button id="newTargetResearch" type="button">New Research</button>
-            <div id="targetHistoryEmpty" class="history-empty-placeholder">No targets yet. Generate one to see it here.</div>
-            <div id="targetHistoryList" role="list"></div>
+          <div class="history-sidebar-actions">
+            <button id="newResearch" type="button" class="history-action primary"><span class="history-action-icon" aria-hidden="true" data-feather="edit-3"></span><span class="history-action-label">New Research</span></button>
+            <button id="historySearch" type="button" class="history-action" aria-label="Search Briefs"><span class="history-action-icon" aria-hidden="true" data-feather="search"></span><span class="history-action-label">Search Briefs</span></button>
           </div>
-        </aside>
-        <div id="mainPane">
-          <div class="mode-view" data-mode-view="targetedBrief">
+          <div class="history-scroll">
+            <div class="history-scroll-header">Briefs</div>
+            <div id="historySidebarContent">
+              <div class="history-section" data-history-section="targetedBrief">
+                <div id="historyEmpty">No history yet. Run a brief to see it here.</div>
+                <div id="historyList" role="list"></div>
+              </div>
+              <div class="history-section" data-history-section="targetGeneration" hidden>
+                <div id="targetHistoryEmpty" class="history-empty-placeholder">No targets yet. Generate one to see it here.</div>
+                <div id="targetHistoryList" role="list"></div>
+              </div>
+            </div>
+          </div>
+          <button type="button" class="history-action history-settings" data-settings-trigger aria-label="Open settings">
+            <span class="history-action-icon" aria-hidden="true" data-feather="settings"></span>
+            <span class="history-action-label">Settings</span>
+          </button>
+        </div>
+      </aside>
+      <div id="app">
+        <div id="navRow">
+          <div id="modeSwitcher" role="tablist" aria-label="Generation mode">
+            <button type="button" class="mode-tab active" role="tab" aria-selected="true" data-mode-tab="targetedBrief">
+              Targeted Brief Generation
+            </button>
+            <button type="button" class="mode-tab" role="tab" aria-selected="false" data-mode-tab="targetGeneration">
+              Target Generation
+            </button>
+          </div>
+          <button id="exportTrigger" type="button" class="primary ghosted">Export</button>
+        </div>
+        <div id="appLayout">
+          <div id="mainPane">
+            <div class="mode-view" data-mode-view="targetedBrief">
+            <div class="brief-section-header">
+              <p class="section-desc">Generate company briefs with personas and outreach tailored to your product context.</p>
+            </div>
             <div id="formPane">
-              <label>Company</label><input id="company" placeholder="e.g., Infosys" />
-              <label>Location</label><input id="location" placeholder="e.g., India" />
-              <label>Product</label><input id="product" placeholder="e.g., Cloud Security" />
-              <label>Upload Docs (PDF/TXT)</label><input id="fileInput" type="file" multiple />
-              <div class="doc-selector">
-                <button id="briefDocPicker" type="button" class="ghost">Add documents</button>
-                <div id="briefDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for brief"></div>
+              <div class="form-input-grid">
+                <div class="input-card">
+                  <label for="company">Company</label>
+                  <p class="input-desc">Who are we researching? Add the exact company name for sharper context.</p>
+                  <input id="company" placeholder="e.g., Infosys" />
+                </div>
+                <div class="input-card">
+                  <label for="location">Location</label>
+                  <p class="input-desc">City, region, or country you want the brief to focus on.</p>
+                  <input id="location" placeholder="e.g., India" />
+                </div>
+                <div class="input-card">
+                  <label for="product">Product</label>
+                  <p class="input-desc">The solution or offering you want woven into the outreach.</p>
+                  <input id="product" placeholder="e.g., Cloud Security" />
+                </div>
+                <div class="input-card">
+                  <label>Upload Docs (PDF/TXT)</label>
+                  <p class="input-desc">Optional collateral to ground the research — battlecards, one-pagers, notes.</p>
+                  <div class="doc-selector">
+                    <button id="briefDocPicker" type="button" class="ghost">Add documents</button>
+                    <div id="briefDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for brief"></div>
+                  </div>
+                </div>
               </div>
 
               <div class="actions">
@@ -60,7 +131,7 @@
             <div id="resultWrapper">
               <div id="result" style="display:none">
                 <h3>Results</h3>
-                <div id="brief">
+                <div id="brief" class="result-section">
                   <div id="briefSummarySection" class="brief-summary">
                     <div class="summary-grid">
                       <div class="summary-item">
@@ -89,7 +160,7 @@
                   <div id="legacyBriefContainer" class="legacy-brief" hidden></div>
                 </div>
                 <h4>Personas</h4><div id="personas"></div>
-                <div id="emailSection">
+                <div id="emailSection" class="result-section">
                   <div class="emailHeader">
                     <div class="emailHeaderLeft">
                       <h4>Generated Emails</h4>
@@ -105,7 +176,7 @@
                     <button id="reviseEmailPersona" type="button" class="ghost">Rewrite this email</button>
                     <button id="reviseEmailAll" type="button" class="ghost">Rewrite all emails</button>
                   </div>
-                  <div id="telePitchSection">
+                  <div id="telePitchSection" class="result-section">
                     <div class="telePitchHeader">
                       <div class="telePitchHeaderLeft">
                         <h4>Telephonic Pitch</h4>
@@ -128,25 +199,35 @@
           </div>
           <div class="mode-view" data-mode-view="targetGeneration" hidden>
             <div class="target-section">
-              <h3>Target Generation</h3>
-              <p>Provide product context to research target companies in a specific location.</p>
+              <p class="section-desc">Provide product context to research target companies in a specific location.</p>
               <form id="targetForm" class="target-form">
-                <label for="targetProduct">Product Name</label>
-                <input id="targetProduct" name="targetProduct" type="text" placeholder="e.g., Cloud Security Platform" autocomplete="off" />
-                <label for="targetDocInput">Product Document Upload</label>
-                <input id="targetDocInput" name="targetDocInput" type="file" accept=".txt,.pdf,.doc,.docx,.md,.html" />
-                <div class="doc-selector">
-                  <button id="targetDocPicker" type="button" class="ghost">Add documents</button>
-                  <div id="targetDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for targets"></div>
+                <div class="input-card">
+                  <label for="targetProduct">Product Name</label>
+                  <p class="input-desc">What are you taking to market? Name the product so targeting stays on-message.</p>
+                  <input id="targetProduct" name="targetProduct" type="text" placeholder="e.g., Cloud Security Platform" autocomplete="off" />
                 </div>
-                <label for="targetSectorsInput">Target Sectors of the Product</label>
-                <div class="target-sectors-field">
-                  <div id="targetSectorsChips" class="target-sectors-chips" aria-live="polite" aria-label="Selected target sectors"></div>
-                  <input id="targetSectorsInput" name="targetSectorsInput" type="text" placeholder="e.g., FinTech, Healthcare" autocomplete="off" />
-                  <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with -.</p>
+                <div class="input-card">
+                  <label>Product Document Upload</label>
+                  <p class="input-desc">Attach collateral to help the assistant pick the right companies.</p>
+                  <div class="doc-selector">
+                    <button id="targetDocPicker" type="button" class="ghost">Add documents</button>
+                    <div id="targetDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for targets"></div>
+                  </div>
                 </div>
-                <label for="targetLocation">Location</label>
-                <input id="targetLocation" name="targetLocation" type="text" placeholder="e.g., Singapore" />
+                <div class="input-card">
+                  <label for="targetSectorsInput">Target Sectors of the Product</label>
+                  <p class="input-desc">Industries or verticals you want to prioritize.</p>
+                  <div class="target-sectors-field">
+                    <div id="targetSectorsChips" class="target-sectors-chips" aria-live="polite" aria-label="Selected target sectors"></div>
+                    <input id="targetSectorsInput" name="targetSectorsInput" type="text" placeholder="e.g., FinTech, Healthcare" autocomplete="off" />
+                    <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with -.</p>
+                  </div>
+                </div>
+                <div class="input-card">
+                  <label for="targetLocation">Location</label>
+                  <p class="input-desc">Where should we hunt for new logos? Add a city or region.</p>
+                  <input id="targetLocation" name="targetLocation" type="text" placeholder="e.g., Singapore" />
+                </div>
                 <button id="generateTargets" type="submit" class="primary">Generate Targets</button>
               </form>
               <div id="targetStatus" class="target-status" role="status" aria-live="polite"></div>
@@ -164,13 +245,14 @@
         </div>
       </div>
     </div>
-    <button id="settingsTrigger" type="button">Settings</button>
     <div id="modalRoot" class="hidden" aria-hidden="true">
       <div class="modal-backdrop"></div>
       <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="modal-header">
           <h3 id="modalTitle"></h3>
-          <button id="modalClose" type="button" aria-label="Close modal">-</button>
+          <button id="modalClose" type="button" aria-label="Close modal">
+            <span class="modal-close-icon" aria-hidden="true" data-feather="x"></span>
+          </button>
         </div>
         <div id="modalBody" class="modal-body"></div>
         <div id="modalFooter" class="modal-footer"></div>
@@ -178,6 +260,12 @@
     </div>
     <script src="chrome-shim.js"></script>
     <script src="background-web.js"></script>
+    <script src="https://unpkg.com/feather-icons@4.29.2/dist/feather.min.js"></script>
     <script src="popup-web.js"></script>
+    <script>
+      if (window.feather && typeof window.feather.replace === 'function') {
+        window.feather.replace({ 'stroke-width': 1.9 });
+      }
+    </script>
   </body>
 </html>

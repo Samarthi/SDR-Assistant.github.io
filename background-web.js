@@ -124,12 +124,15 @@ async function loadLlmSettings() {
 
 async function callGeminiDirect(promptText, opts = {}, providerSettings = {}) {
   // Gemini is routed through Groq for consistency with the project-wide Groq usage.
-  const groqModel =
+  const candidateModel =
     coerceModelForProvider(
       LLMProvider.GROQ,
       (opts && opts.model && typeof opts.model === "string" ? opts.model : null) ||
         DEFAULT_LLM_MODELS[LLMProvider.GROQ]
     ) || DEFAULT_LLM_MODELS[LLMProvider.GROQ];
+  const groqModel = candidateModel && candidateModel.toLowerCase().startsWith("openai/")
+    ? candidateModel
+    : "openai/gpt-oss-120b";
 
   const shimmedOpts = {
     ...opts,
@@ -1928,6 +1931,44 @@ async function updateResearchHistoryEntry(id, resultUpdates = {}) {
   }
 }
 
+async function renameHistoryEntry(storageKey, id, title) {
+  try {
+    const data = await chrome.storage.local.get([storageKey]);
+    const history = Array.isArray(data[storageKey]) ? data[storageKey] : [];
+    const idx = history.findIndex((entry) => entry && entry.id === id);
+    if (idx === -1) return { ok: false, error: "Entry not found" };
+    const normalizedTitle = typeof title === "string" ? title.trim() : "";
+    const updated = { ...(history[idx] || {}) };
+    if (normalizedTitle) {
+      updated.customTitle = normalizedTitle;
+    } else {
+      delete updated.customTitle;
+    }
+    history[idx] = updated;
+    await chrome.storage.local.set({ [storageKey]: history });
+    return { ok: true, entry: updated };
+  } catch (err) {
+    console.warn("Failed to rename history entry", err);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+async function deleteHistoryEntry(storageKey, id) {
+  try {
+    const data = await chrome.storage.local.get([storageKey]);
+    const history = Array.isArray(data[storageKey]) ? data[storageKey] : [];
+    const nextHistory = history.filter((entry) => entry && entry.id !== id);
+    if (nextHistory.length === history.length) {
+      return { ok: false, error: "Entry not found" };
+    }
+    await chrome.storage.local.set({ [storageKey]: nextHistory });
+    return { ok: true, deletedId: id };
+  } catch (err) {
+    console.warn("Failed to delete history entry", err);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
 async function saveTargetHistoryEntry(request, result) {
   try {
     const docRefs = Array.isArray(request.docs)
@@ -3059,6 +3100,46 @@ Return markdown only. Provide one bullet per persona using this format (no headi
   };
 }
 
+async function fetchProductContext({ product }) {
+  const trimmedProduct = typeof product === "string" ? product.trim() : "";
+  if (!trimmedProduct) return { context: "", rawText: "", error: "Product name is missing." };
+
+  const prompt = `You are a helpful assistant. Use browser search to quickly understand this product and summarize its top use cases.
+Product: ${trimmedProduct}
+
+Requirements:
+- Rely on live web search to ground the summary; prefer recent, credible sources.
+- Capture what the product does, who uses it, and 3-5 core use cases or problems it solves.
+- Keep it concise and factual.
+
+Return markdown only as a short paragraph or up to 5 bullets (no headings, no code fences).`;
+
+  try {
+    const resp = await callLlmWithRetry(prompt, {
+      model: GROQ_COMPOUND_MINI_MODEL,
+      secondaryModel: GROQ_COMPOUND_MINI_MODEL,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 600,
+      },
+      compoundCustom: {
+        tools: {
+          enabled_tools: ["web_search"],
+        },
+      },
+    });
+
+    if (resp.error) {
+      return { context: "", rawText: "", error: resp.error };
+    }
+
+    const rawText = typeof resp.text === "string" ? resp.text.trim() : "";
+    return { context: rawText, rawText, error: "" };
+  } catch (err) {
+    return { context: "", rawText: "", error: err?.message || String(err) };
+  }
+}
+
 async function generateBrief({ company, location, product, docs = [], runId }) {
   try {
     let totalSteps = 3;
@@ -3070,10 +3151,17 @@ async function generateBrief({ company, location, product, docs = [], runId }) {
       label: "Starting brief request",
     });
 
-    const docsText = (docs || []).map(d => {
+    let docsText = (docs || []).map(d => {
       const txt = decodeBase64Text(d.content_b64 || d.content || "");
       return `--- ${d.name || "doc"} ---\n${txt.substring(0, 4000)}`;
     }).join("\n\n");
+
+    if (!docsText.trim() && product) {
+      const productContextResult = await fetchProductContext({ product });
+      if (productContextResult.context) {
+        docsText = `--- Product context (web search) ---\n${productContextResult.context}`;
+      }
+    }
 
     const stepDone = (label) => {
       completedSteps = Math.min(totalSteps, completedSteps + 1);
@@ -3412,6 +3500,18 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         if (req.action === "updateResearchHistoryEntry") {
           const updateResult = await updateResearchHistoryEntry(req.id, req.result || {});
           sendResponse(updateResult);
+          return;
+        }
+        if (req.action === "renameHistoryEntry") {
+          const storageKey = req.historyType === "target" ? TARGET_HISTORY_KEY : RESEARCH_HISTORY_KEY;
+          const renameResult = await renameHistoryEntry(storageKey, req.id, req.title || "");
+          sendResponse(renameResult);
+          return;
+        }
+        if (req.action === "deleteHistoryEntry") {
+          const storageKey = req.historyType === "target" ? TARGET_HISTORY_KEY : RESEARCH_HISTORY_KEY;
+          const deleteResult = await deleteHistoryEntry(storageKey, req.id);
+          sendResponse(deleteResult);
           return;
         }
         if (req.action === 'getTargetHistory') {

@@ -4,7 +4,6 @@ const productEl = document.getElementById('product');
 const fileInput = document.getElementById('fileInput');
 const saveKeyBtn = document.getElementById('saveKey');
 const newResearchBtn = document.getElementById('newResearch');
-const newTargetResearchBtn = document.getElementById('newTargetResearch');
 const apiKeyInput = document.getElementById('apiKey');
 const generateBtn = document.getElementById('generate');
 const status = document.getElementById('status');
@@ -34,8 +33,16 @@ const historyList = document.getElementById('historyList');
 const historyEmpty = document.getElementById('historyEmpty');
 const targetHistoryList = document.getElementById('targetHistoryList');
 const targetHistoryEmpty = document.getElementById('targetHistoryEmpty');
+const historySidebarTitle = document.querySelector('.history-scroll-header');
+const historySearchBtn = document.getElementById('historySearch');
+const historySearchLabel = historySearchBtn?.querySelector('.history-action-label');
+const navRail = document.getElementById('navRail');
+const historyCollapseBtn = document.getElementById('historyCollapse');
+const railLogoBtn = document.getElementById('railLogo');
+const railNewResearchBtn = document.getElementById('railNewResearch');
+const railHistoryBtn = document.getElementById('railHistory');
 const exportTrigger = document.getElementById('exportTrigger');
-const settingsTrigger = document.getElementById('settingsTrigger');
+const settingsTriggers = Array.from(document.querySelectorAll('[data-settings-trigger]'));
 const heroBriefBtn = document.getElementById('heroBriefBtn');
 const heroTargetsBtn = document.getElementById('heroTargetsBtn');
 const heroDocsBtn = document.getElementById('heroDocsBtn');
@@ -84,6 +91,8 @@ const EXPORT_TEMPLATES_STORAGE_KEY = 'exportTemplates';
 const EXPORT_MODAL_STATE_STORAGE_KEY = 'exportModalState';
 const EXPORT_PAGE_SIZE = 8;
 const PITCH_FROM_COMPANY_KEY = 'pitchFromCompany';
+const HISTORY_SIDEBAR_COLLAPSED_KEY = 'historySidebarCollapsed';
+const SIDEBAR_ICON_HTML = '<span class="sidebar-icon" aria-hidden="true"></span>';
 const LLMProvider = {
   GEMINI: 'gemini',
   GROQ: 'groq',
@@ -209,6 +218,20 @@ function resolveTheme(preference = themePreference) {
   return systemThemeMedia?.matches ? ThemePreference.DARK : ThemePreference.LIGHT;
 }
 
+function updateThemeAssets(resolvedTheme = themePreference) {
+  const isDark = resolvedTheme === ThemePreference.DARK;
+  document.querySelectorAll('[data-theme-logo]').forEach((img) => {
+    if (!(img instanceof HTMLImageElement)) return;
+    const lightSrc = img.getAttribute('data-logo-light') || 'logo-light.png';
+    const darkSrc = img.getAttribute('data-logo-dark') || 'logo-dark.png';
+    img.src = isDark ? darkSrc : lightSrc;
+  });
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (favicon) {
+    favicon.href = isDark ? 'logo-dark.png' : 'logo-light.png';
+  }
+}
+
 function applyTheme(preference = themePreference) {
   themePreference = normalizeThemePreference(preference);
   const resolved = resolveTheme(themePreference);
@@ -216,6 +239,7 @@ function applyTheme(preference = themePreference) {
     document.body.classList.toggle('theme-dark', resolved === ThemePreference.DARK);
     document.body.classList.toggle('theme-light', resolved === ThemePreference.LIGHT);
   }
+  updateThemeAssets(resolved);
   return resolved;
 }
 
@@ -294,25 +318,41 @@ const pitchingCompanyLoadPromise = chrome.storage.local
   })
   .catch(() => '');
 
+function updateHistorySidebarTitle(mode) {
+  if (!historySidebarTitle) return;
+  historySidebarTitle.textContent = mode === Mode.TARGET_GENERATION ? 'Targets' : 'Briefs';
+}
+
+function updateHistorySearchLabel(mode) {
+  if (!historySearchLabel) return;
+  const isTargetMode = mode === Mode.TARGET_GENERATION;
+  const labelText = isTargetMode ? 'Search Targets' : 'Search Briefs';
+  historySearchLabel.textContent = labelText;
+  if (historySearchBtn) {
+    historySearchBtn.setAttribute('aria-label', labelText);
+  }
+}
+
 function setActiveMode(mode) {
   const validModes = Object.values(Mode);
-  if (!validModes.includes(mode)) {
-    mode = Mode.TARGETED_BRIEF;
-  }
-  if (activeMode === mode) {
+  const normalizedMode = validModes.includes(mode) ? mode : Mode.TARGETED_BRIEF;
+  const modeChanged = activeMode !== normalizedMode;
+  activeMode = normalizedMode;
+  updateHistorySidebarTitle(normalizedMode);
+  updateHistorySearchLabel(normalizedMode);
+  if (!modeChanged) {
     return;
   }
-  activeMode = mode;
 
   Array.from(modeTabs).forEach((tab) => {
-    const isActive = tab.dataset.modeTab === mode;
+    const isActive = tab.dataset.modeTab === normalizedMode;
     tab.classList.toggle('active', isActive);
     tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
     tab.removeAttribute('tabindex');
   });
 
   Array.from(modeViews).forEach((view) => {
-    const isActive = view.dataset.modeView === mode;
+    const isActive = view.dataset.modeView === normalizedMode;
     if (isActive) {
       view.removeAttribute('hidden');
       view.setAttribute('aria-hidden', 'false');
@@ -323,7 +363,7 @@ function setActiveMode(mode) {
   });
 
   Array.from(historySections).forEach((section) => {
-    const isActive = section.dataset.historySection === mode;
+    const isActive = section.dataset.historySection === normalizedMode;
     if (isActive) {
       section.removeAttribute('hidden');
       section.setAttribute('aria-hidden', 'false');
@@ -1210,7 +1250,7 @@ heroExportBtn?.addEventListener('click', () => {
 });
 
 heroSettingsBtn?.addEventListener('click', () => {
-  settingsTrigger?.click();
+  openSettingsModal();
 });
 
 saveKeyBtn?.addEventListener('click', async () => {
@@ -1404,7 +1444,13 @@ copyTargetsBtn?.addEventListener('click', async () => {
   }
 });
 
-newResearchBtn?.addEventListener('click', () => {
+function startNewResearch(mode = activeMode || Mode.TARGETED_BRIEF) {
+  const normalizedMode = mode || Mode.TARGETED_BRIEF;
+  if (normalizedMode === Mode.TARGET_GENERATION) {
+    resetTargetSearch();
+    return;
+  }
+
   companyEl && (companyEl.value = '');
   locationEl && (locationEl.value = '');
   productEl && (productEl.value = '');
@@ -1441,9 +1487,13 @@ newResearchBtn?.addEventListener('click', () => {
   telephonicPitchErrorMessage = '';
   telephonicPitchDebugAttempts = [];
   setTelePitchOutput('No telephonic pitch generated yet.');
+}
+
+newResearchBtn?.addEventListener('click', () => {
+  startNewResearch();
 });
 
-newTargetResearchBtn?.addEventListener('click', () => {
+function resetTargetSearch() {
   if (targetProductInput) targetProductInput.value = '';
   if (targetLocationInput) targetLocationInput.value = '';
   if (targetDocInput) targetDocInput.value = '';
@@ -1456,7 +1506,7 @@ newTargetResearchBtn?.addEventListener('click', () => {
 
   resetTargetResults();
   setTargetStatus('Ready for a new target search.', { error: false });
-});
+}
 
 briefDocPickerBtn?.addEventListener('click', () => openDocPickerModal(Mode.TARGETED_BRIEF));
 targetDocPickerBtn?.addEventListener('click', () => openDocPickerModal(Mode.TARGET_GENERATION));
@@ -1744,6 +1794,150 @@ function openDocPickerModal(mode) {
   });
 }
 
+function openHistorySearchModal(mode = activeMode || Mode.TARGETED_BRIEF) {
+  const resolvedMode = mode === Mode.TARGET_GENERATION ? Mode.TARGET_GENERATION : Mode.TARGETED_BRIEF;
+  const isTargetMode = resolvedMode === Mode.TARGET_GENERATION;
+  const modalTitleText = isTargetMode ? 'Search Targets' : 'Search Briefs';
+
+  const getEntries = () => sortHistoryEntries(isTargetMode ? targetHistoryEntries : historyEntries);
+  const formatSubtitle = (entry) => {
+    if (!entry) return '';
+    if (isTargetMode) {
+      const sectors = Array.isArray(entry?.request?.sectors) ? entry.request.sectors.filter(Boolean).join(', ') : '';
+      return [entry?.request?.product, entry?.request?.location, sectors].filter(Boolean).join(' • ');
+    }
+    return [entry?.request?.product, entry?.request?.location].filter(Boolean).join(' • ');
+  };
+
+  openModal({
+    title: modalTitleText,
+    render: ({ body, footer, close }) => {
+      if (!body || !footer) return;
+      body.innerHTML = '';
+      body.classList.add('history-search-body');
+      const previousFooterDisplay = footer.style.display;
+      footer.style.display = 'none';
+
+      const helper = document.createElement('div');
+      helper.className = 'modal-helper';
+      helper.textContent = isTargetMode
+        ? 'Search your past target runs by product, location, or sector.'
+        : 'Search your past briefs by company, product, or location.';
+      body.appendChild(helper);
+
+      const searchInput = document.createElement('input');
+      searchInput.type = 'search';
+      searchInput.className = 'doc-picker-search history-search-input';
+      searchInput.placeholder = isTargetMode
+        ? 'Search targets (product, location, sector)'
+        : 'Search briefs (company, product, location)';
+      body.appendChild(searchInput);
+
+      const results = document.createElement('div');
+      results.className = 'history-search-results';
+      results.setAttribute('role', 'list');
+      body.appendChild(results);
+
+      const renderResults = () => {
+        const rawTerm = (searchInput.value || '').toLowerCase();
+        const tokens = rawTerm.split(/\s+/).filter(Boolean);
+        const sortedEntries = getEntries();
+        results.innerHTML = '';
+
+        if (!sortedEntries.length) {
+          const empty = document.createElement('div');
+          empty.className = 'modal-helper';
+          empty.textContent = isTargetMode ? 'No targets generated yet.' : 'No briefs generated yet.';
+          results.appendChild(empty);
+          return;
+        }
+
+        const filtered = sortedEntries.filter((entry) => {
+          const title = isTargetMode ? getTargetHistoryTitle(entry) : getBriefHistoryTitle(entry);
+          const subtitle = formatSubtitle(entry);
+          const haystackParts = [
+            title,
+            subtitle,
+            formatHistoryTimestamp(entry.createdAt) || '',
+            entry?.request?.company,
+            entry?.request?.product,
+            entry?.request?.location,
+            entry?.customTitle,
+          ];
+          if (isTargetMode && Array.isArray(entry?.request?.sectors)) {
+            haystackParts.push(entry.request.sectors.join(' '));
+          }
+          const haystack = haystackParts.filter(Boolean).join(' ').toLowerCase();
+          return !tokens.length || tokens.every((token) => haystack.includes(token));
+        });
+
+        if (!filtered.length) {
+          const empty = document.createElement('div');
+          empty.className = 'modal-helper';
+          empty.textContent = 'No matches. Try a different search.';
+          results.appendChild(empty);
+          return;
+        }
+
+        filtered.forEach((entry) => {
+          const item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'history-item history-search-item';
+          item.dataset.id = entry.id;
+          item.setAttribute('role', 'listitem');
+
+          const content = document.createElement('div');
+          content.className = 'history-content';
+
+          const title = document.createElement('span');
+          title.className = 'history-title';
+          title.textContent = isTargetMode ? getTargetHistoryTitle(entry) : getBriefHistoryTitle(entry);
+          content.appendChild(title);
+
+          const subtitleText = formatSubtitle(entry);
+          if (subtitleText) {
+            const subtitle = document.createElement('span');
+            subtitle.className = 'history-subtitle';
+            subtitle.textContent = subtitleText;
+            content.appendChild(subtitle);
+          }
+
+          const meta = document.createElement('span');
+          meta.className = 'history-meta';
+          meta.textContent = formatHistoryTimestamp(entry.createdAt) || '';
+          content.appendChild(meta);
+
+          item.appendChild(content);
+
+          item.addEventListener('click', () => {
+            close();
+            setActiveMode(resolvedMode);
+            if (isTargetMode) {
+              setActiveTargetHistoryItem(entry.id);
+              showTargetHistoryEntry(entry, { updateForm: true, statusText: 'Loaded from search.' });
+            } else {
+              setActiveHistoryItem(entry.id);
+              showHistoryEntry(entry, { updateForm: true, statusText: 'Loaded from search.' });
+            }
+            setHistorySidebarCollapsed(false);
+          });
+
+          results.appendChild(item);
+        });
+      };
+
+      searchInput.addEventListener('input', renderResults);
+      setTimeout(() => searchInput.focus(), 0);
+      renderResults();
+
+      return () => {
+        body.classList.remove('history-search-body');
+        footer.style.display = previousFooterDisplay;
+      };
+    },
+  });
+}
+
 modalClose?.addEventListener('click', () => closeModal());
 modalMaximizeBtn?.addEventListener('click', () => toggleModalMaximize());
 modalRoot?.addEventListener('click', (evt) => {
@@ -1768,8 +1962,8 @@ function openSettingsModal(options = {}) {
   });
 }
 
-settingsTrigger?.addEventListener('click', () => {
-  openSettingsModal();
+settingsTriggers.forEach((btn) => {
+  btn.addEventListener('click', () => openSettingsModal());
 });
 
 exportTrigger?.addEventListener('click', async () => {
@@ -4698,19 +4892,217 @@ function formatHistoryTimestamp(isoString) {
   return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function getHistorySortValue(entry) {
+  if (!entry) return 0;
+  const ts = entry.createdAt ? new Date(entry.createdAt).getTime() : NaN;
+  if (!Number.isNaN(ts)) return ts;
+  const idNum = Number(entry.id);
+  return Number.isNaN(idNum) ? 0 : idNum;
+}
+
+function sortHistoryEntries(entries = []) {
+  if (!Array.isArray(entries)) return [];
+  return [...entries].sort((a, b) => getHistorySortValue(b) - getHistorySortValue(a));
+}
+
+function getBriefHistoryTitle(entry) {
+  if (!entry) return 'Untitled brief';
+  const custom = typeof entry.customTitle === 'string' ? entry.customTitle.trim() : '';
+  if (custom) return custom;
+  return entry?.request?.company || 'Untitled brief';
+}
+
+function getTargetHistoryTitle(entry) {
+  if (!entry) return 'Untitled search';
+  const custom = typeof entry.customTitle === 'string' ? entry.customTitle.trim() : '';
+  if (custom) return custom;
+  return entry?.request?.product || 'Untitled search';
+}
+
+function setHistorySidebarCollapsed(collapsed) {
+  if (!navRail || !historyCollapseBtn) return;
+  navRail.classList.toggle('expanded', !collapsed);
+  historyCollapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  historyCollapseBtn.innerHTML = SIDEBAR_ICON_HTML;
+  try {
+    window.localStorage?.setItem(HISTORY_SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch (err) {
+    // Ignore storage errors (private mode, etc.)
+  }
+}
+
+function initHistorySidebarCollapse() {
+  if (!navRail || !historyCollapseBtn) return;
+  let startCollapsed = true;
+  try {
+    startCollapsed = window.localStorage?.getItem(HISTORY_SIDEBAR_COLLAPSED_KEY) === '1';
+  } catch (err) {
+    startCollapsed = true;
+  }
+  setHistorySidebarCollapsed(startCollapsed);
+  historyCollapseBtn.addEventListener('click', () => {
+    setHistorySidebarCollapsed(true);
+  });
+}
+
+function getHistoryTypeFromMode(mode) {
+  return mode === Mode.TARGET_GENERATION ? 'target' : 'research';
+}
+
+function handleHistoryRename(id, mode) {
+  const source = mode === Mode.TARGET_GENERATION ? targetHistoryEntries : historyEntries;
+  const entry = source.find(item => item.id === id);
+  if (!entry) return;
+  const currentTitle = mode === Mode.TARGET_GENERATION ? getTargetHistoryTitle(entry) : getBriefHistoryTitle(entry);
+  const nextTitle = window.prompt('Rename this history entry', currentTitle);
+  if (nextTitle === null) return;
+  const trimmed = nextTitle.trim();
+  chrome.runtime.sendMessage(
+    { action: 'renameHistoryEntry', id, title: trimmed, historyType: getHistoryTypeFromMode(mode) },
+    (resp) => {
+      const err = chrome.runtime.lastError;
+      if (err || !resp?.ok) {
+        console.warn('Failed to rename history entry', err || resp?.error);
+        return;
+      }
+      if (mode === Mode.TARGET_GENERATION) {
+        loadTargetHistory({ selectEntryId: id, autoShow: false, updateForm: false, statusText: '' });
+      } else {
+        loadHistory({ selectEntryId: id, autoShow: false, updateForm: false, statusText: '' });
+      }
+    }
+  );
+}
+
+function handleHistoryDelete(id, mode) {
+  if (!id) return;
+  const confirmed = window.confirm('Delete this history entry? This cannot be undone.');
+  if (!confirmed) return;
+  const isTarget = mode === Mode.TARGET_GENERATION;
+  const wasActive = isTarget ? currentTargetHistoryId === id : currentHistoryId === id;
+  if (isTarget && wasActive) {
+    currentTargetHistoryId = null;
+  } else if (!isTarget && wasActive) {
+    currentHistoryId = null;
+  }
+  chrome.runtime.sendMessage(
+    { action: 'deleteHistoryEntry', id, historyType: getHistoryTypeFromMode(mode) },
+    (resp) => {
+      const err = chrome.runtime.lastError;
+      if (err || !resp?.ok) {
+        console.warn('Failed to delete history entry', err || resp?.error);
+        return;
+      }
+      const refreshOpts = { selectLatest: true, autoShow: wasActive, updateForm: false, statusText: '' };
+      if (isTarget) {
+        loadTargetHistory({ ...refreshOpts, selectEntryId: currentTargetHistoryId });
+      } else {
+        loadHistory({ ...refreshOpts, selectEntryId: currentHistoryId });
+      }
+    }
+  );
+}
+
+function handleHistoryAction(action, id, mode) {
+  if (!action || !id) return;
+  if (action === 'rename') {
+    handleHistoryRename(id, mode);
+  } else if (action === 'delete') {
+    handleHistoryDelete(id, mode);
+  }
+}
+
+function triggerRailNewResearch() {
+  startNewResearch(activeMode || Mode.TARGETED_BRIEF);
+}
+
+function closeAllHistoryMenus(container) {
+  if (!container) return;
+  const menus = container.querySelectorAll('.history-menu.open');
+  menus.forEach((menu) => {
+    menu.classList.remove('open');
+    const parentItem = menu.closest('.history-item');
+    parentItem?.classList.remove('menu-open');
+    const trigger = menu.querySelector('[data-history-menu="trigger"]');
+    const list = menu.querySelector('.history-menu-list');
+    trigger?.setAttribute('aria-expanded', 'false');
+    if (list) list.hidden = true;
+  });
+}
+
+function toggleHistoryMenu(trigger, container) {
+  if (!trigger) return;
+  const menu = trigger.closest('.history-menu');
+  if (!menu) return;
+  const list = menu.querySelector('.history-menu-list');
+  const item = menu.closest('.history-item');
+  const willOpen = !menu.classList.contains('open');
+
+  closeAllHistoryMenus(container);
+
+  if (willOpen) {
+    menu.classList.add('open');
+    item?.classList.add('menu-open');
+    trigger.setAttribute('aria-expanded', 'true');
+    if (list) list.hidden = false;
+  } else {
+    menu.classList.remove('open');
+    item?.classList.remove('menu-open');
+    trigger.setAttribute('aria-expanded', 'false');
+    if (list) list.hidden = true;
+  }
+}
+
+function buildHistoryActionMenu(entryId) {
+  const actions = document.createElement('div');
+  actions.className = 'history-actions';
+
+  const menuWrapper = document.createElement('div');
+  menuWrapper.className = 'history-menu';
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'history-menu-trigger';
+  trigger.dataset.historyMenu = 'trigger';
+  trigger.dataset.id = entryId;
+  trigger.setAttribute('aria-haspopup', 'true');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-label', 'Open history actions');
+  trigger.textContent = '...';
+  menuWrapper.appendChild(trigger);
+
+  const list = document.createElement('div');
+  list.className = 'history-menu-list';
+  list.setAttribute('role', 'menu');
+  list.hidden = true;
+
+  const renameBtn = document.createElement('button');
+  renameBtn.type = 'button';
+  renameBtn.className = 'history-menu-item';
+  renameBtn.dataset.historyAction = 'rename';
+  renameBtn.dataset.id = entryId;
+  renameBtn.setAttribute('role', 'menuitem');
+  renameBtn.textContent = 'Rename';
+  list.appendChild(renameBtn);
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'history-menu-item destructive';
+  deleteBtn.dataset.historyAction = 'delete';
+  deleteBtn.dataset.id = entryId;
+  deleteBtn.setAttribute('role', 'menuitem');
+  deleteBtn.textContent = 'Delete';
+  list.appendChild(deleteBtn);
+
+  menuWrapper.appendChild(list);
+  actions.appendChild(menuWrapper);
+  return actions;
+}
+
 function renderHistory(entries, opts = {}) {
   if (!historyList || !historyEmpty) return null;
 
-  const toSortValue = (entry) => {
-    if (!entry) return 0;
-    const ts = entry.createdAt ? new Date(entry.createdAt).getTime() : NaN;
-    if (!Number.isNaN(ts)) return ts;
-    const idNum = Number(entry.id);
-    return Number.isNaN(idNum) ? 0 : idNum;
-  };
-
-  historyEntries = Array.isArray(entries) ? [...entries] : [];
-  historyEntries.sort((a, b) => toSortValue(b) - toSortValue(a));
+  historyEntries = sortHistoryEntries(entries);
 
   if (opts.selectEntryId) {
     currentHistoryId = opts.selectEntryId;
@@ -4727,32 +5119,37 @@ function renderHistory(entries, opts = {}) {
   if (!hasEntries) return currentHistoryId;
 
   historyEntries.forEach((entry) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'history-item';
-    btn.setAttribute('role', 'listitem');
-    btn.dataset.id = entry.id;
-    if (entry.id === currentHistoryId) btn.classList.add('active');
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.setAttribute('role', 'listitem');
+    item.dataset.id = entry.id;
+    item.tabIndex = 0;
+    if (entry.id === currentHistoryId) item.classList.add('active');
+
+    const content = document.createElement('div');
+    content.className = 'history-content';
 
     const title = document.createElement('span');
     title.className = 'history-title';
-    title.textContent = entry?.request?.company || 'Untitled brief';
-    btn.appendChild(title);
+    title.textContent = getBriefHistoryTitle(entry);
+    content.appendChild(title);
 
     const subtitleText = [entry?.request?.product, entry?.request?.location].filter(Boolean).join(' - ');
     if (subtitleText) {
       const subtitle = document.createElement('span');
       subtitle.className = 'history-subtitle';
       subtitle.textContent = subtitleText;
-      btn.appendChild(subtitle);
+      content.appendChild(subtitle);
     }
 
     const meta = document.createElement('span');
     meta.className = 'history-meta';
     meta.textContent = formatHistoryTimestamp(entry.createdAt) || '';
-    btn.appendChild(meta);
+    content.appendChild(meta);
 
-    historyList.appendChild(btn);
+    item.appendChild(content);
+    item.appendChild(buildHistoryActionMenu(entry.id));
+    historyList.appendChild(item);
   });
 
   return currentHistoryId;
@@ -4828,16 +5225,7 @@ function loadHistory(options = {}) {
 function renderTargetHistory(entries, opts = {}) {
   if (!targetHistoryList || !targetHistoryEmpty) return null;
 
-  const toSortValue = (entry) => {
-    if (!entry) return 0;
-    const ts = entry.createdAt ? new Date(entry.createdAt).getTime() : NaN;
-    if (!Number.isNaN(ts)) return ts;
-    const idNum = Number(entry.id);
-    return Number.isNaN(idNum) ? 0 : idNum;
-  };
-
-  targetHistoryEntries = Array.isArray(entries) ? [...entries] : [];
-  targetHistoryEntries.sort((a, b) => toSortValue(b) - toSortValue(a));
+  targetHistoryEntries = sortHistoryEntries(entries);
 
   if (opts.selectEntryId) {
     currentTargetHistoryId = opts.selectEntryId;
@@ -4854,17 +5242,20 @@ function renderTargetHistory(entries, opts = {}) {
   if (!hasEntries) return currentTargetHistoryId;
 
   targetHistoryEntries.forEach((entry) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'history-item';
-    btn.setAttribute('role', 'listitem');
-    btn.dataset.id = entry.id;
-    if (entry.id === currentTargetHistoryId) btn.classList.add('active');
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.setAttribute('role', 'listitem');
+    item.dataset.id = entry.id;
+    item.tabIndex = 0;
+    if (entry.id === currentTargetHistoryId) item.classList.add('active');
+
+    const content = document.createElement('div');
+    content.className = 'history-content';
 
     const title = document.createElement('span');
     title.className = 'history-title';
-    title.textContent = entry?.request?.product || 'Untitled search';
-    btn.appendChild(title);
+    title.textContent = getTargetHistoryTitle(entry);
+    content.appendChild(title);
 
     const subtitleParts = [];
     if (entry?.request?.location) subtitleParts.push(entry.request.location);
@@ -4874,16 +5265,18 @@ function renderTargetHistory(entries, opts = {}) {
     if (subtitleParts.length) {
       const subtitle = document.createElement('span');
       subtitle.className = 'history-subtitle';
-      subtitle.textContent = subtitleParts.join(' • ');
-      btn.appendChild(subtitle);
+      subtitle.textContent = subtitleParts.join(' | ');
+      content.appendChild(subtitle);
     }
 
     const meta = document.createElement('span');
     meta.className = 'history-meta';
     meta.textContent = formatHistoryTimestamp(entry.createdAt) || '';
-    btn.appendChild(meta);
+    content.appendChild(meta);
 
-    targetHistoryList.appendChild(btn);
+    item.appendChild(content);
+    item.appendChild(buildHistoryActionMenu(entry.id));
+    targetHistoryList.appendChild(item);
   });
 
   return currentTargetHistoryId;
@@ -5014,6 +5407,23 @@ generateBtn?.addEventListener('click', async () => {
 });
 
 historyList?.addEventListener('click', (evt) => {
+  const menuTrigger = evt.target.closest('[data-history-menu="trigger"]');
+  if (menuTrigger) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    toggleHistoryMenu(menuTrigger, historyList);
+    return;
+  }
+
+  const actionBtn = evt.target.closest('[data-history-action]');
+  if (actionBtn) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    closeAllHistoryMenus(historyList);
+    const { historyAction: action, id } = actionBtn.dataset;
+    handleHistoryAction(action, id, Mode.TARGETED_BRIEF);
+    return;
+  }
   const button = evt.target.closest('.history-item');
   if (!button) return;
   const { id } = button.dataset;
@@ -5021,13 +5431,65 @@ historyList?.addEventListener('click', (evt) => {
   const entry = historyEntries.find(item => item.id === id);
   if (!entry) return;
   evt.preventDefault();
+  closeAllHistoryMenus(historyList);
   setActiveHistoryItem(id);
   showHistoryEntry(entry, { updateForm: true });
 });
 
+historyList?.addEventListener('keydown', (evt) => {
+  if (evt.defaultPrevented) return;
+  if (evt.target.closest('[data-history-action]')) return;
+  if (evt.target.closest('[data-history-menu="trigger"]')) return;
+  const button = evt.target.closest('.history-item');
+  if (!button) return;
+  if (evt.key === 'Enter' || evt.key === ' ') {
+    evt.preventDefault();
+    const { id } = button.dataset;
+    if (!id) return;
+    const entry = historyEntries.find(item => item.id === id);
+    if (!entry) return;
+    setActiveHistoryItem(id);
+    showHistoryEntry(entry, { updateForm: true });
+  }
+});
+
+railHistoryBtn?.addEventListener('click', () => {
+  setHistorySidebarCollapsed(false);
+});
+
+railNewResearchBtn?.addEventListener('click', () => {
+  triggerRailNewResearch();
+});
+
+railLogoBtn?.addEventListener('click', () => {
+  setHistorySidebarCollapsed(false);
+});
+
+historySearchBtn?.addEventListener('click', () => {
+  openHistorySearchModal(activeMode || Mode.TARGETED_BRIEF);
+});
+
+initHistorySidebarCollapse();
 loadHistory({ selectLatest: true, autoShow: true, statusText: '' });
 
 targetHistoryList?.addEventListener('click', (evt) => {
+  const menuTrigger = evt.target.closest('[data-history-menu="trigger"]');
+  if (menuTrigger) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    toggleHistoryMenu(menuTrigger, targetHistoryList);
+    return;
+  }
+
+  const actionBtn = evt.target.closest('[data-history-action]');
+  if (actionBtn) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    closeAllHistoryMenus(targetHistoryList);
+    const { historyAction: action, id } = actionBtn.dataset;
+    handleHistoryAction(action, id, Mode.TARGET_GENERATION);
+    return;
+  }
   const button = evt.target.closest('.history-item');
   if (!button) return;
   const { id } = button.dataset;
@@ -5035,8 +5497,33 @@ targetHistoryList?.addEventListener('click', (evt) => {
   const entry = targetHistoryEntries.find(item => item.id === id);
   if (!entry) return;
   evt.preventDefault();
+  closeAllHistoryMenus(targetHistoryList);
   setActiveTargetHistoryItem(id);
   showTargetHistoryEntry(entry, { updateForm: true });
 });
 
+targetHistoryList?.addEventListener('keydown', (evt) => {
+  if (evt.defaultPrevented) return;
+  if (evt.target.closest('[data-history-action]')) return;
+  if (evt.target.closest('[data-history-menu="trigger"]')) return;
+  const button = evt.target.closest('.history-item');
+  if (!button) return;
+  if (evt.key === 'Enter' || evt.key === ' ') {
+    evt.preventDefault();
+    const { id } = button.dataset;
+    if (!id) return;
+    const entry = targetHistoryEntries.find(item => item.id === id);
+    if (!entry) return;
+    setActiveTargetHistoryItem(id);
+    showTargetHistoryEntry(entry, { updateForm: true });
+  }
+});
+
 loadTargetHistory({ selectLatest: true, autoShow: true, statusText: '' });
+
+document.addEventListener('click', (evt) => {
+  const withinMenu = evt.target.closest('.history-menu');
+  if (withinMenu) return;
+  closeAllHistoryMenus(historyList);
+  closeAllHistoryMenus(targetHistoryList);
+});

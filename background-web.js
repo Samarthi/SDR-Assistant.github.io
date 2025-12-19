@@ -612,7 +612,7 @@ function parseKeyValueSegments(segment = "") {
   return out;
 }
 
-function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "") {
+function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "", productHint = "") {
   const lines = splitMarkdownLines(markdown);
   const personas = [];
   lines.forEach((raw, idx) => {
@@ -622,6 +622,8 @@ function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "") {
     const name = kv.name || kv.persona || `Persona ${idx + 1}`;
     const designation = kv.title || kv.designation || "";
     const department = kv.department || kv.dept || "";
+    const linkedinKeywords =
+      kv.linkedin_keywords || kv.linkedinsearch || kv.linkedinquery || kv.linkedin || kv.linkedinkeywords || "";
     const link =
       kv.searchlink ||
       kv.search_link ||
@@ -634,6 +636,10 @@ function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "") {
       name,
       designation,
       department,
+      linkedin_keywords: linkedinKeywords || "",
+      linkedin_search_url: toLinkedInPeopleSearchUrl(
+        linkedinKeywords || buildLinkedInKeywordFallback({ name, designation, department }, fallbackCompany, productHint)
+      ),
       zoominfo_link: link || buildZoomInfoSearchLink({ name, designation, department }, fallbackCompany),
     });
   });
@@ -879,6 +885,30 @@ function parseMarkdownTable(markdown = "") {
     return row;
   });
   return { headers, rows };
+}
+
+function toLinkedInPeopleSearchUrl(searchString) {
+  const q = (searchString ?? "").trim();
+  if (!q) {
+    return "https://www.linkedin.com/search/results/people/?keywords=&origin=SWITCH_SEARCH_VERTICAL";
+  }
+
+  // LinkedIn uses a URL-encoded "keywords" param (spaces become %20).
+  const keywords = encodeURIComponent(q);
+
+  return `https://www.linkedin.com/search/results/people/?keywords=${keywords}&origin=SWITCH_SEARCH_VERTICAL`;
+}
+
+function buildLinkedInKeywordFallback(persona = {}, companyName = "", productName = "") {
+  const parts = [];
+
+  if (persona.designation) parts.push(persona.designation.trim());
+  if (persona.department) parts.push(persona.department.trim());
+  if (companyName) parts.push(companyName.trim());
+  if (productName) parts.push(productName.trim());
+  if (persona.name) parts.push(persona.name.trim());
+
+  return parts.filter(Boolean).join(" ").trim();
 }
 
 function buildZoomInfoSearchLink(persona, companyName) {
@@ -2544,6 +2574,11 @@ function normalizePersonas(rawPersonas, companyName) {
     name: p.name || "",
     designation: p.designation || "",
     department: p.department || "",
+    linkedin_keywords: p.linkedin_keywords || p.linkedinKeywords || "",
+    linkedin_search_url: toLinkedInPeopleSearchUrl(
+      (p.linkedin_keywords || p.linkedinKeywords || "").trim() ||
+        buildLinkedInKeywordFallback(p, companyName || "", p.product || "")
+    ),
     zoominfo_link:
       p.zoominfo_link || p.zoomInfo || p.zoominfo || p.zoom || buildZoomInfoSearchLink(p, companyName || ""),
   }));
@@ -2959,8 +2994,10 @@ Product: ${product}
 Context docs (first 4000 chars each):
 ${docsText || "(no docs provided)"}
 
+Include a LinkedIn People search keyword string for each persona that would help find the right titles at ${company || "the company"} for ${product}. Do not return a LinkedIn URL—only the keyword string.
+
 Return markdown only. Provide one bullet per persona using this format (no headings, no code fences):
-- Name=<Full name>; Title=<Job title>; Department=<Department>; SearchLink=<ZoomInfo/LinkedIn style Google search link>`;
+- Name=<Full name>; Title=<Job title>; Department=<Department>; SearchLink=<ZoomInfo/LinkedIn style Google search link>; LinkedInKeywords=<keyword string for LinkedIn People search>`;
 
   const resp = await callLlmWithRetry(prompt, {
     model: LLAMA_33_MODEL,
@@ -2976,7 +3013,7 @@ Return markdown only. Provide one bullet per persona using this format (no headi
   }
 
   const rawText = typeof resp.text === "string" ? resp.text : "";
-  const personas = parsePersonasFromMarkdown(rawText, company);
+  const personas = parsePersonasFromMarkdown(rawText, company, product);
 
   if (!Array.isArray(personas) || !personas.length) {
     return { error: "Model did not return personas.", rawText };
@@ -3670,6 +3707,8 @@ if (typeof module !== "undefined" && module.exports) {
     parseTopNewsMarkdown,
     parseTargetCompaniesMarkdown,
     parseMarkdownTable,
+    toLinkedInPeopleSearchUrl,
+    buildLinkedInKeywordFallback,
   };
 }
 

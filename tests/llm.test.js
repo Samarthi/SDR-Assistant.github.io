@@ -41,6 +41,8 @@ const {
   parseTopNewsMarkdown,
   parseTargetCompaniesMarkdown,
   parseMarkdownTable,
+  toLinkedInPeopleSearchUrl,
+  buildLinkedInKeywordFallback,
 } = require(path.join(__dirname, "..", "background-web.js"));
 
 const tests = [];
@@ -205,11 +207,14 @@ test("callLlmWithRetry uses stored Groq settings", async () => {
 
 test("parsePersonasFromMarkdown extracts persona list", () => {
   const personas = parsePersonasFromMarkdown(`- Name=Alice Doe; Title=VP Marketing; Department=Marketing; SearchLink=https://example.com
-- Name=Bob Roe; Title=CTO; Department=Engineering; SearchLink=https://example.org`, "ACME");
+- Name=Bob Roe; Title=CTO; Department=Engineering; SearchLink=https://example.org; LinkedInKeywords=CTO ACME`, "ACME");
   assert.strictEqual(personas.length, 2);
   assert.strictEqual(personas[0].name, "Alice Doe");
   assert.strictEqual(personas[0].designation, "VP Marketing");
   assert.strictEqual(personas[1].department, "Engineering");
+  assert.strictEqual(personas[1].linkedin_keywords, "CTO ACME");
+  assert.ok(personas[1].linkedin_search_url.includes("linkedin.com/search/results/people/"));
+  assert.ok(personas[1].linkedin_search_url.includes("keywords=CTO%20ACME"));
 });
 
 test("parsePersonaEmailMarkdown extracts subject and body", () => {
@@ -236,6 +241,23 @@ Close with CTA.`,
   );
   assert.strictEqual(parsed.personaName, "Bob Roe");
   assert.ok(parsed.script.includes("CTA"));
+});
+
+test("toLinkedInPeopleSearchUrl builds encoded search URL", () => {
+  const url = toLinkedInPeopleSearchUrl("CISO Adani");
+  assert.ok(url.startsWith("https://www.linkedin.com/search/results/people/"));
+  assert.ok(url.includes("CISO%20Adani"));
+});
+
+test("buildLinkedInKeywordFallback includes company and product context", () => {
+  const keywords = buildLinkedInKeywordFallback(
+    { name: "Zed", designation: "Head of IT" },
+    "ACME Corp",
+    "Cloud Security"
+  );
+  assert.ok(keywords.includes("Head of IT"));
+  assert.ok(keywords.includes("ACME Corp"));
+  assert.ok(keywords.includes("Cloud Security"));
 });
 
 test("parseRevenueSectorMarkdown reads labeled lines", () => {

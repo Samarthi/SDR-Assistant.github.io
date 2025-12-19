@@ -1994,6 +1994,28 @@ function normalizeUrl(u) {
   return 'https://www.google.com/search?q=' + encodeURIComponent(u) + '&num=20';
 }
 
+function toLinkedInPeopleSearchUrl(searchString) {
+  const q = (searchString ?? '').trim();
+  if (!q) {
+    return 'https://www.linkedin.com/search/results/people/?keywords=&origin=SWITCH_SEARCH_VERTICAL';
+  }
+
+  const keywords = encodeURIComponent(q);
+  return `https://www.linkedin.com/search/results/people/?keywords=${keywords}&origin=SWITCH_SEARCH_VERTICAL`;
+}
+
+function getLinkedInPeopleSearchLink(persona = {}) {
+  const rawUrl = persona.linkedin_search_url || persona.linkedinSearchUrl || '';
+  const keywords = persona.linkedin_keywords || persona.linkedinKeywords || '';
+
+  if (rawUrl && /^https?:\/\//i.test(rawUrl)) return rawUrl;
+  if (rawUrl && !/\s/.test(rawUrl)) return rawUrl;
+  if (keywords) return toLinkedInPeopleSearchUrl(keywords);
+  if (rawUrl) return toLinkedInPeopleSearchUrl(rawUrl);
+
+  return '';
+}
+
 function sanitizeTemplateColumns(columns) {
   if (!Array.isArray(columns)) return [];
   return columns
@@ -3879,15 +3901,29 @@ function clearAndRenderPersonas(personas) {
 
     const rawLink = p.zoominfo_link || p.zoomInfo || p.zoominfo || p.zoom || '';
     const link = normalizeUrl(rawLink);
+    const linkedinLink = getLinkedInPeopleSearchLink(p);
 
-    if (link) {
+    if (link || linkedinLink) {
       const linkWrap = document.createElement('div');
-      const a = document.createElement('a');
-      a.href = link;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.textContent = 'Google Search';
-      linkWrap.appendChild(a);
+      if (link) {
+        const a = document.createElement('a');
+        a.href = link;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = 'Google Search';
+        linkWrap.appendChild(a);
+      }
+      if (link && linkedinLink) {
+        linkWrap.appendChild(document.createTextNode(' | '));
+      }
+      if (linkedinLink) {
+        const linkedinAnchor = document.createElement('a');
+        linkedinAnchor.href = linkedinLink;
+        linkedinAnchor.target = '_blank';
+        linkedinAnchor.rel = 'noopener noreferrer';
+        linkedinAnchor.textContent = 'LinkedIn Search';
+        linkWrap.appendChild(linkedinAnchor);
+      }
       wrapper.appendChild(linkWrap);
     }
 

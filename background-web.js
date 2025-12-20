@@ -56,302 +56,17 @@ function loadPromptBuilders() {
   return {};
 }
 
-const fallbackPrompts = {
-  buildTargetsPrompt({
-    product = "",
-    location = "",
-    sectorSection = "",
-    docSection = "",
-    mullInstruction = "",
-    targetCompanyGoal = 100,
-  }) {
-    const trimmedProduct = product || "N/A";
-    const trimmedLocation =
-      location || "Not explicitly provided. Infer a sensible geography from context but prioritize the stated location if any.";
-    const mull = mullInstruction ? mullInstruction.replace(/^- /, "") : "";
-
-    return `You are a B2B sales intelligence researcher who uses live web search to validate insights.
-Identify companies located in the specified geography that would be high-priority targets for purchasing the product described below.
-List only companies that plausibly operate in that location and have a clear fit with the product's value.
-
-Product name: ${trimmedProduct}
-Target location: ${trimmedLocation}
-${sectorSection}
-
-${docSection}
-
-Guidelines:
-- ${mull}
-- Use search to confirm the company's presence in the target geography, their core business, and the official website.
-- Prefer mid-market or enterprise buyers whose needs align with the product.
-- Aggressively remove duplicates or near-duplicates so each company appears only once.
-- Provide up to ${targetCompanyGoal} distinct companies, aiming for ${targetCompanyGoal} whenever credible candidates exist. Only return fewer if the market truly lacks more qualified prospects.
-- If revenue is unavailable, leave the revenue field as an empty string.
-- Keep notes to one concise sentence explaining the fit.
-
-Return markdown only as bullet points (no code fences). Use this format for each company:
-- Name=<Company>; Website=<official URL>; Revenue=<revenue or empty>; Notes=<one-line fit reason>`;
-  },
-  buildTelephonicPitchPrompt({ persona = {}, company, location, product, docsText, pitchFromCompany }) {
-    const personaName = persona.name || persona.personaName || persona.persona_name || "the persona";
-    const designation = persona.designation || persona.personaDesignation || persona.persona_designation || "";
-    const department = persona.department || persona.personaDepartment || persona.persona_department || "";
-    const pitchingOrg = (pitchFromCompany && pitchFromCompany.trim()) || "your company";
-    const prospectLabel = company || "the target company";
-    return `You are a helpful assistant. Generate a concise telephonic sales pitch for one persona.
-  Perspective:
-      - You represent ${pitchingOrg}. You are pitching ${prospectLabel}, who is the prospect.
-      - Do not flip the roles: ${pitchingOrg} is the seller, ${prospectLabel} is the buyer.
-  Instructions:
-      - Research the product, company priorities, and each persona's responsibilities so the caller sounds well informed and relevant.
-      - Build a 45-60 second phone script for every persona that starts with a personalized opener, adds one probing question, and ties ${product} to their KPIs.
-      - Maintain a confident, consultative tone that feels natural for a live call. Avoid long email-like sentences.
-      - Keep the telephonic script very crisp, short and sales friendly.
-      - Here's an example of telephonic pitch: "Hi [Name], this is [Your Name] calling from [Your Company]. Am I catching you at a good time for quick minute?
-      Great, thank you! I'll keep this really short. I work with companies in the [Target company sector]- helping them [your product feature verbs].
-      You might have heard of [Your Product] - it's a solution that helps [Your Product Features]. 
-      For a company like yours, where you're [Target Company Pain Point verbs], [Your Product] can [Your Product's Effects and Improvements].
-      I'd love to set up a short 20 minute demo with our [Relevant Team from Your Company]. 
-      They can walk you through how [Target Company] could use it for [Your Product's Effects and Improvements]. Would that work for you sometime this week?" 
-
-  Prospect company: ${prospectLabel}
-  Location: ${location || "N/A"}
-  Product: ${product}
-  Pitching organization (you): ${pitchingOrg}
-  Persona: ${personaName}${designation ? ` | Title: ${designation}` : ""}${department ? ` | Department: ${department}` : ""}
-
-  Context docs (first 4000 chars each):
-  ${docsText || "(no docs provided)"}
-
-  Return markdown only in this exact format (no headings, no code fences):
-  Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
-  Telephonic Pitch:
-  <45-60 second script here>`;
-  },
-  buildPersonaEmailsPrompt({ persona = {}, company, location, product, docsText, pitchFromCompany }) {
-    const personaName = persona.name || persona.personaName || persona.persona_name || "the persona";
-    const designation = persona.designation || persona.personaDesignation || persona.persona_designation || "";
-    const department = persona.department || persona.personaDepartment || persona.persona_department || "";
-    const pitchingOrg = (pitchFromCompany && pitchFromCompany.trim()) || "your company";
-    const prospectLabel = company || "the target company";
-    return `You are a helpful assistant. Generate outbound email drafts for each persona.
-Prospect company: ${prospectLabel}
-Pitching organization (you): ${pitchingOrg}
-Location: ${location || "N/A"}
-Product: ${product}
- Persona: ${personaName}${designation ? ` | Title: ${designation}` : ""}${department ? ` | Department: ${department}` : ""}
-
-Context docs (first 4000 chars each):
-${docsText || "(no docs provided)"}
-
-Rules:
-- ${prospectLabel} is the prospect. Every email must be written from ${pitchingOrg}'s perspective pitching ${prospectLabel} on ${product}. Never reverse these roles.
-- Create a separate subject and body for every persona listed; ensure persona_name matches the persona you are writing for.
-- Emails must include a crisp subject and concise, sales-forward body tailored to that persona. Make the email very short, crisp and visually appealing with numbers and statistics from the documents uploaded. Here's an example of an email template:
-    Subject: PVR INOX: Guaranteed 90% Faster Content Delivery with IBM Aspera.
-
-      Dear [Name],
-
-      PVR INOX's scale (over 1,700 screens) requires guaranteed, instantaneous content flow. Current transfer methods are slow, unreliable, and expensive.
-
-      IBM Aspera changes the math:
-
-      Speed: A 100GB DCP asset transfers in under 30 minutes, down from the standard 4-8 hours. This is a 90% time savings.
-
-      Efficiency: We guarantee 95%+ network utilization, maximizing the ROI on your current bandwidth investment.
-
-      Risk: Near-zero transfer failure, eliminating costly re-sends and critical release delays.
-
-      Precedent: Major global studio 'X' leveraged Aspera to cut their distribution window by 50%.
-
-      We eliminate content bottlenecks, securing your revenue and saving substantial operational costs.
-
-      Are you available for a sharp 10-minute ROI discussion this week?
-
-      Sincerely,
-
-      [Your Name] [Your Title]
-
-Return markdown only in this exact format (no headings, no code fences):
-Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
-Subject: <subject line>
-Body:
-<short email body>`;
-  },
-  buildEmailRevisionPrompt({ persona = {}, company, location, product, baseEmail = {}, instructions = "", pitchingOrg }) {
-    const personaName = persona.name || persona.personaName || persona.persona_name || "the persona";
-    const designation = persona.designation || persona.personaDesignation || persona.persona_designation || "";
-    const department = persona.department || persona.personaDepartment || persona.persona_department || "";
-    const subject = baseEmail.subject || baseEmail.email_subject || "";
-    const body = baseEmail.body || baseEmail.email_body || "";
-    const prospectLabel = company || "the target company";
-    const personaLine = [
-      `Persona: ${personaName}`,
-      designation ? `Title: ${designation}` : null,
-      department ? `Department: ${department}` : null,
-    ]
-      .filter(Boolean)
-      .join(" | ");
-
-    const hasExisting = !!(subject || body);
-
-    return `You are a helpful sales copywriter. Revise the outbound email for the given persona.
-Prospect company: ${prospectLabel}
-Location: ${location || "N/A"}
-Product: ${product || "N/A"}
-Pitching organization (you): ${pitchingOrg || "your company"}
-${personaLine}
-
-${hasExisting ? "Existing email draft:" : "No existing draft. Create a fresh email:"}
-Subject: ${subject || "(none)"}
-Body:
-${body || "(none)"}
-
-User instructions to apply:
-${instructions || "(none)"}
-
-Rules:
-- Keep it concise, sales-forward, and tailored to the persona.
-- Keep the subject crisp; keep the body short and skimmable.
-- Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"} on ${product || "the product"}.
-
-Return markdown only in this exact format (no headings, no code fences):
-Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
-Subject: <subject line>
-Body:
-<short email body>`;
-  },
-  buildPitchRevisionPrompt({ persona = {}, company, location, product, basePitch = {}, instructions = "", pitchingOrg }) {
-    const personaName = persona.name || persona.personaName || persona.persona_name || "the persona";
-    const designation = persona.designation || persona.personaDesignation || persona.persona_designation || "";
-    const department = persona.department || persona.personaDepartment || persona.persona_department || "";
-    const hasExisting =
-      basePitch.callGoal ||
-      basePitch.call_goal ||
-      basePitch.opener ||
-      basePitch.discoveryQuestion ||
-      basePitch.discovery_question ||
-      basePitch.script ||
-      basePitch.full_pitch;
-
-    const personaLine = [
-      `Persona: ${personaName}`,
-      designation ? `Title: ${designation}` : null,
-      department ? `Department: ${department}` : null,
-    ]
-      .filter(Boolean)
-      .join(" | ");
-
-    return `You are a helpful sales assistant. Revise the telephonic pitch for this persona.
-Prospect company: ${company || "N/A"}
-Location: ${location || "N/A"}
-Product: ${product || "N/A"}
-Pitching organization (you): ${pitchingOrg || "your company"}
-${personaLine}
-
-${hasExisting ? "Existing pitch sections (rewrite them):" : "No existing pitch. Draft a fresh one:"}
-${JSON.stringify(basePitch || {}, null, 2)}
-
-Instructions:
-- Apply the user instructions (if any): ${instructions || "(none)"}.
-- 45-60 seconds, confident and consultative.
-- Personalized opener, one probing question, tie ${product || "the product"} to their KPIs.
-- Keep it crisp and action-oriented; avoid email-like walls of text.
-- Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"}.
-- Do not split the response into labeled sections (call goal, opener, CTA, etc.); keep everything woven into one tight script.
-
-Return markdown only in this exact format (no headings, no code fences):
-Persona=${personaName}; Title=${designation || "N/A"}; Department=${department || "N/A"}
-Telephonic Pitch:
-<45-60 second script>`;
-  },
-  buildHqRevenueSectorPrompt({ company, locationHint, product, docsText }) {
-    const normalizedLocationHint = locationHint || "None provided (use global HQ)";
-    return `You are a helpful assistant. Using live web search, return the official HQ location, realistic revenue, and primary industry sector for the company.
-Company: ${company}
-Location hint: ${normalizedLocationHint}
-Product: ${product || "N/A"}
-
-Context docs (first 4000 chars each):
-${docsText || "(no docs provided)"}
-
-Return markdown only with exactly three lines (no headings, no code fences):
-HQ Location: City, State/Region, Country
-Revenue: realistic revenue string or "Unknown"
-Sector: primary industry sector`;
-  },
-  buildRecentNewsPrompt({ company, location, docsText }) {
-    return `You are a helpful assistant. Find the five most recent, relevant news headlines about the target company.
-Company: ${company}
-Location context: ${location || "N/A"}
-
-Context docs (first 4000 chars each):
-${docsText || "(no docs provided)"}
-
-Return markdown only. Provide up to 5 bullet items in this format (no code fences):
-- Title=<headline>; Summary=<one-sentence summary>`;
-  },
-  buildPersonaBriefPrompt({ prospectLabel, pitchingOrg, location, product, docsText, companyName }) {
-    return `You are a helpful assistant. Generate buying personas for ${prospectLabel}. Focus only on personas involved in purchasing ${product}.
-Pitching organization (you): ${pitchingOrg}
-Location: ${location || "N/A"}
-Product: ${product}
-Context docs (first 4000 chars each):
-${docsText || "(no docs provided)"}
-
-Include a LinkedIn People search keyword string for each persona that would help find the right titles at ${companyName || "the company"} for ${product}. Do not return a LinkedIn URL - only the keyword string.
-
-Return markdown only. Provide one bullet per persona using this format (no headings, no code fences):
-- Name=<Full name>; Title=<Job title>; Department=<Department>; SearchLink=<ZoomInfo/LinkedIn style Google search link>; LinkedInKeywords=<keyword string for LinkedIn People search>`;
-  },
-  buildProductContextPrompt({ product }) {
-    return `You are a helpful assistant. Use browser search to quickly understand this product and summarize its top use cases.
-Product: ${product}
-
-Requirements:
-- Rely on live web search to ground the summary; prefer recent, credible sources.
-- Capture what the product does, who uses it, and 3-5 core use cases or problems it solves.
-- Keep it concise and factual.
-
-Return markdown only as a short paragraph or up to 5 bullets (no headings, no code fences).`;
-  },
-  buildExportPrompt({ columns = [], dataset = [], format }) {
-    const columnLines = columns.map((col, idx) => `${idx + 1}. ${col.header} - ${col.description}`).join("\n");
-    const datasetJson = JSON.stringify(dataset, null, 2);
-    const formatInstruction =
-      format === "md"
-        ? "Return a markdown table with headers exactly matching the column headers below. Also include an optional line `Notes: ...` after the table if you want to add a note."
-        : "Return a markdown table with headers exactly matching the column headers below. We will parse it into .xlsx.";
-
-    return `You are helping prepare research data for export.
-
-Column specifications (respect the header text exactly):
-${columnLines}
-
-The research entries are provided as JSON below. Each entry may include nested details such as personas and generated content. Derive values for each column from the available data. If a value is missing, use an empty string. Do not invent data beyond reasonable inferences from the supplied content.
-
-Research entries JSON:
-${datasetJson}
-
-Return markdown only (no code fences) in this structure:
-| <Header 1> | <Header 2> | ... |
-| --- | --- | ... |
-| row 1 col 1 | row 1 col 2 | ... |
-| row 2 col 1 | row 2 col 2 | ... |
-Notes: <optional short quality notes or considerations>
-
-- Keep the row order aligned to the research entries provided.
-- Every header must appear and only those headers.
-- Use multiline cells where helpful (they will be preserved).
-- ${formatInstruction}`;
-  },
-};
-
 const promptBuilders = (() => {
   const loaded = loadPromptBuilders();
   if (loaded && Object.keys(loaded).length) return loaded;
-  return fallbackPrompts;
+  return {};
 })();
+
+function requirePromptBuilder(name) {
+  const builder = promptBuilders && typeof promptBuilders[name] === "function" ? promptBuilders[name] : null;
+  if (builder) return builder;
+  throw new Error(`Prompt builder "${name}" is unavailable. Ensure prompts.js is loaded.`);
+}
 
 function emitBriefProgress({ runId, current, total, label }) {
   if (!runId) return;
@@ -589,6 +304,53 @@ function translateToolsToGroq(tools, disableDefaultTools) {
   return { tools: translated, choice: translated.length ? "auto" : undefined };
 }
 
+function parseRetryAfterMs(headers) {
+  if (!headers || typeof headers.get !== "function") return null;
+  const raw = headers.get("retry-after");
+  if (!raw) return null;
+  const num = Number(raw);
+  if (Number.isFinite(num)) return Math.max(0, num * 1000);
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? Math.max(0, ts - Date.now()) : null;
+}
+
+function parseHeaderInt(headers, name) {
+  if (!headers || typeof headers.get !== "function") return null;
+  const raw = headers.get(name);
+  if (raw === null || raw === undefined) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseSecondsHeaderToMs(headers, name) {
+  const val = parseHeaderInt(headers, name);
+  if (val === null) return null;
+  return Math.max(0, val * 1000);
+}
+
+function parseRateLimitHeaders(resp) {
+  const headers = resp && resp.headers;
+  if (!headers || typeof headers.get !== "function") return null;
+
+  const rateLimit = {
+    retryAfterMs: parseRetryAfterMs(headers),
+    limitRequests: parseHeaderInt(headers, "x-ratelimit-limit-requests"),
+    limitTokens: parseHeaderInt(headers, "x-ratelimit-limit-tokens"),
+    remainingRequests: parseHeaderInt(headers, "x-ratelimit-remaining-requests"),
+    remainingTokens: parseHeaderInt(headers, "x-ratelimit-remaining-tokens"),
+    resetRequestsMs: parseSecondsHeaderToMs(headers, "x-ratelimit-reset-requests"),
+    resetTokensMs: parseSecondsHeaderToMs(headers, "x-ratelimit-reset-tokens"),
+  };
+
+  const hasAny = Object.values(rateLimit).some((v) => v !== null && v !== undefined);
+  return hasAny ? rateLimit : null;
+}
+
+function addJitter(ms) {
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(0, ms + Math.floor(Math.random() * 251));
+}
+
 async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
   const storedKey = providerSettings && providerSettings.groqKey ? providerSettings.groqKey : "";
   let groqKey = storedKey;
@@ -686,20 +448,21 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
       body: JSON.stringify(body),
     });
 
+    const rateLimit = parseRateLimitHeaders(resp);
     const respText = await resp.text();
     let respJson = null;
     try {
       respJson = JSON.parse(respText);
     } catch (err) {
       if (!resp.ok) {
-        return { error: `Groq API error (Status ${resp.status}): ${respText}`, status: resp.status };
+        return { error: `Groq API error (Status ${resp.status}): ${respText}`, status: resp.status, rateLimit };
       }
-      return { error: "Failed to parse Groq API response as JSON.", details: respText, status: resp.status };
+      return { error: "Failed to parse Groq API response as JSON.", details: respText, status: resp.status, rateLimit };
     }
 
     if (!resp.ok) {
       const message = respJson?.error?.message || respText;
-      return { error: `Groq API error: ${message}`, details: respJson, status: resp.status };
+      return { error: `Groq API error: ${message}`, details: respJson, status: resp.status, rateLimit };
     }
 
     let statusCode = resp.status;
@@ -724,12 +487,13 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
           error: "Model returned tool calls without textual content.",
           details: respJson || { tool_calls: toolCalls },
           status: statusCode,
+          rateLimit,
         };
       }
-      return { error: "Could not find text in Groq response.", details: respJson, status: statusCode };
+      return { error: "Could not find text in Groq response.", details: respJson, status: statusCode, rateLimit };
     }
 
-    return { ok: true, text: outputText, raw: respJson, status: statusCode };
+    return { ok: true, text: outputText, raw: respJson, status: statusCode, rateLimit };
   } catch (err) {
     return { error: `Network request failed: ${String(err)}` };
   }
@@ -749,57 +513,104 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
     secondaryModelOverride ||
     (primaryModel === GROQ_SECONDARY_MODEL ? DEFAULT_LLM_MODELS[LLMProvider.GROQ] : GROQ_SECONDARY_MODEL);
 
-  const primary = await callGroqDirect(
-    promptText,
-    {
-      ...opts,
-      model: primaryModel,
-    },
-    { ...providerSettings, model: primaryModel }
-  );
-  if (!primary.error) {
-    return primary;
-  }
-
-  const attempts = [
-    {
-      label: "primary",
-      error: primary.error,
-      details: primary.details || primary.raw || null,
-    },
-  ];
-
+  const attempts = [];
   const boostedMaxTokens = Math.min(
     typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.2) : 4800,
     16000
   );
+  const maxAttempts = Math.max(1, Math.min(opts.maxAttempts || 3, 5));
+  let currentModel = primaryModel;
+  let attemptIndex = 0;
+  let lastError = null;
 
-  const shouldFallbackModel = primary.status === 429;
+  const computeWaitMs = (rateLimit, status) => {
+    if (!rateLimit) return null;
+    const MAX_WAIT_MS = 60000;
 
-  const retry = await callGroqDirect(
-    promptText,
-    {
-      ...opts,
-      model: shouldFallbackModel ? secondaryModel : primaryModel,
-      generationConfig: {
-        ...baseConfig,
-        temperature: Math.max(0, Math.min(baseConfig.temperature ?? 0.3, 0.7)),
-        maxOutputTokens: boostedMaxTokens,
+    let waitMs = null;
+    if (status === 429 && Number.isFinite(rateLimit.retryAfterMs)) {
+      waitMs = rateLimit.retryAfterMs;
+    }
+
+    if (waitMs === null) {
+      const resets = []
+        .concat(Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
+        .concat(Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
+      if (resets.length) {
+        waitMs = Math.min(...resets);
+      }
+    }
+
+    if (waitMs === null && status === 429) {
+      waitMs = 300;
+    }
+
+    if (waitMs === null) {
+      const lowTokens = Number.isFinite(rateLimit.remainingTokens) && rateLimit.remainingTokens <= 1;
+      const lowRequests = Number.isFinite(rateLimit.remainingRequests) && rateLimit.remainingRequests <= 1;
+      const proactiveResets = []
+        .concat(lowTokens && Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
+        .concat(lowRequests && Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
+      if (proactiveResets.length) {
+        waitMs = Math.min(...proactiveResets);
+      }
+    }
+
+    if (waitMs === null || !Number.isFinite(waitMs)) return null;
+    return Math.min(MAX_WAIT_MS, Math.max(0, waitMs));
+  };
+
+  while (attemptIndex < maxAttempts) {
+    const useBoostedConfig = attemptIndex > 0;
+    const generationConfig = useBoostedConfig
+      ? {
+          ...baseConfig,
+          temperature: Math.max(0, Math.min(baseConfig.temperature ?? 0.3, 0.7)),
+          maxOutputTokens: boostedMaxTokens,
+        }
+      : baseConfig;
+
+    const resp = await callGroqDirect(
+      promptText,
+      {
+        ...opts,
+        model: currentModel,
+        generationConfig,
       },
-    },
-    { ...providerSettings, model: shouldFallbackModel ? secondaryModel : primaryModel }
-  );
+      { ...providerSettings, model: currentModel }
+    );
 
-  if (retry.error) {
+    if (!resp.error) {
+      return attemptIndex === 0 ? resp : { ...resp, attempts };
+    }
+
     attempts.push({
-      label: shouldFallbackModel ? "retry_model_switch" : "retry_light",
-      error: retry.error,
-      details: retry.details || retry.raw || null,
+      label:
+        attemptIndex === 0
+          ? "primary"
+          : resp.status === 429 && currentModel !== primaryModel
+            ? "retry_model_switch"
+            : "retry",
+      error: resp.error,
+      details: resp.details || resp.raw || resp.rateLimit || null,
+      status: resp.status,
+      rateLimit: resp.rateLimit,
     });
-    return { ...retry, attempts };
+
+    lastError = resp;
+    attemptIndex += 1;
+    if (attemptIndex >= maxAttempts) break;
+
+    const waitMs = addJitter(computeWaitMs(resp.rateLimit, resp.status));
+    if (Number.isFinite(waitMs) && waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
+    const shouldSwitchModel = resp.status === 429 && secondaryModel && secondaryModel !== currentModel;
+    currentModel = shouldSwitchModel ? secondaryModel : currentModel;
   }
 
-  return { ...retry, attempts };
+  return { ...lastError, attempts };
 }
 
 async function callLlmWithRetry(promptText, opts = {}) {
@@ -1627,18 +1438,20 @@ ${truncatedDoc}`
       )}) before listing companies. Keep this reasoning private but let it guide your short list so every recommendation clearly fits one of those sectors.`
     : `- Spend several internal reasoning steps inferring which sectors benefit most from "${trimmedProduct}" before listing companies. Keep this reasoning private but let it guide your short list.`;
 
-  const pb =
-    promptBuilders && typeof promptBuilders.buildTargetsPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  const prompt = pb.buildTargetsPrompt({
-    product: trimmedProduct,
-    location: trimmedLocation,
-    sectorSection,
-    docSection,
-    mullInstruction,
-    targetCompanyGoal: TARGET_COMPANY_GOAL,
-  });
+  let prompt = "";
+  try {
+    const buildTargetsPrompt = requirePromptBuilder("buildTargetsPrompt");
+    prompt = buildTargetsPrompt({
+      product: trimmedProduct,
+      location: trimmedLocation,
+      sectorSection,
+      docSection,
+      mullInstruction,
+      targetCompanyGoal: TARGET_COMPANY_GOAL,
+    });
+  } catch (err) {
+    return { error: err?.message || String(err) };
+  }
 
   const resp = await callLlmWithRetry(prompt, {
     generationConfig: {
@@ -2338,27 +2151,18 @@ function summarizePersonasForTelepitch(personas = []) {
 }
 
 function buildTelephonicPitchPrompt({ persona = {}, company, location, product, docsText, pitchFromCompany }) {
-  const pb =
-    promptBuilders && typeof promptBuilders.buildTelephonicPitchPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  return pb.buildTelephonicPitchPrompt({ persona, company, location, product, docsText, pitchFromCompany });
+  const builder = requirePromptBuilder("buildTelephonicPitchPrompt");
+  return builder({ persona, company, location, product, docsText, pitchFromCompany });
 }
 
 function buildPersonaEmailsPrompt({ persona = {}, company, location, product, docsText, pitchFromCompany }) {
-  const pb =
-    promptBuilders && typeof promptBuilders.buildPersonaEmailsPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  return pb.buildPersonaEmailsPrompt({ persona, company, location, product, docsText, pitchFromCompany });
+  const builder = requirePromptBuilder("buildPersonaEmailsPrompt");
+  return builder({ persona, company, location, product, docsText, pitchFromCompany });
 }
 
 function buildEmailRevisionPrompt({ persona = {}, company, location, product, baseEmail = {}, instructions = "", pitchingOrg }) {
-  const pb =
-    promptBuilders && typeof promptBuilders.buildEmailRevisionPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  return pb.buildEmailRevisionPrompt({
+  const builder = requirePromptBuilder("buildEmailRevisionPrompt");
+  return builder({
     persona,
     company,
     location,
@@ -2370,11 +2174,8 @@ function buildEmailRevisionPrompt({ persona = {}, company, location, product, ba
 }
 
 function buildPitchRevisionPrompt({ persona = {}, company, location, product, basePitch = {}, instructions = "", pitchingOrg }) {
-  const pb =
-    promptBuilders && typeof promptBuilders.buildPitchRevisionPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  return pb.buildPitchRevisionPrompt({
+  const builder = requirePromptBuilder("buildPitchRevisionPrompt");
+  return builder({
     persona,
     company,
     location,
@@ -2601,14 +2402,24 @@ async function generateTelephonicPitchScripts({ personas, company, location, pro
   const pitches = [];
 
   const tasks = (personas || []).map(async (persona, idx) => {
-    const prompt = buildTelephonicPitchPrompt({
-      persona,
-      company,
-      location,
-      product,
-      docsText,
-      pitchFromCompany: pitchingCompany,
-    });
+    let prompt = "";
+    try {
+      prompt = buildTelephonicPitchPrompt({
+        persona,
+        company,
+        location,
+        product,
+        docsText,
+        pitchFromCompany: pitchingCompany,
+      });
+    } catch (err) {
+      attempts.push({
+        label: `persona_${idx + 1}`,
+        error: err?.message || String(err),
+      });
+      pitches[idx] = normalizeTelephonicPitchEntry(null, idx, personas);
+      return;
+    }
 
     const generationConfig = {
       temperature: 0.2,
@@ -2673,14 +2484,27 @@ async function generatePersonaEmails({ personas, company, location, product, doc
   const attempts = [];
 
   const tasks = (personas || []).map(async (persona, idx) => {
-    const prompt = buildPersonaEmailsPrompt({
-      persona,
-      company,
-      location,
-      product,
-      docsText,
-      pitchFromCompany: pitchingCompany,
-    });
+    let prompt = "";
+    try {
+      prompt = buildPersonaEmailsPrompt({
+        persona,
+        company,
+        location,
+        product,
+        docsText,
+        pitchFromCompany: pitchingCompany,
+      });
+    } catch (err) {
+      attempts.push({ label: `persona_${idx + 1}`, error: err?.message || String(err) });
+      personaEmails[idx] = normalizePersonaEmails(personas, [])[idx] || {
+        personaName: persona?.name || `Persona ${idx + 1}`,
+        personaDesignation: persona?.designation || "",
+        personaDepartment: persona?.department || "",
+        subject: "",
+        body: "",
+      };
+      return;
+    }
 
     const resp = await callLlmWithRetry(prompt, {
       model: LLAMA_33_MODEL,
@@ -3021,16 +2845,18 @@ async function fetchHqRevenueAndSector({ company, locationHint, product, docsTex
   }
 
   const normalizedLocationHint = locationHint ? String(locationHint).trim() : "";
-  const pb =
-    promptBuilders && typeof promptBuilders.buildHqRevenueSectorPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  const prompt = pb.buildHqRevenueSectorPrompt({
-    company,
-    locationHint: normalizedLocationHint,
-    product,
-    docsText,
-  });
+  let prompt = "";
+  try {
+    const buildHqRevenueSectorPrompt = requirePromptBuilder("buildHqRevenueSectorPrompt");
+    prompt = buildHqRevenueSectorPrompt({
+      company,
+      locationHint: normalizedLocationHint,
+      product,
+      docsText,
+    });
+  } catch (err) {
+    return { error: err?.message || String(err), overview: { company_name: company, hq_location: "", revenue_estimate: "", industry_sector: "" }, rawText: "" };
+  }
 
   try {
     const resp = await callLlmWithRetry(prompt, {
@@ -3063,11 +2889,13 @@ async function fetchHqRevenueAndSector({ company, locationHint, product, docsTex
 }
 
 async function fetchRecentNewsEntries({ company, location, docsText }) {
-  const pb =
-    promptBuilders && typeof promptBuilders.buildRecentNewsPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  const prompt = pb.buildRecentNewsPrompt({ company, location, docsText });
+  let prompt = "";
+  try {
+    const buildRecentNewsPrompt = requirePromptBuilder("buildRecentNewsPrompt");
+    prompt = buildRecentNewsPrompt({ company, location, docsText });
+  } catch (err) {
+    return { error: err?.message || String(err), attempts: [] };
+  }
 
   try {
     const resp = await callLlmWithRetry(prompt, {
@@ -3137,18 +2965,20 @@ async function generatePersonaBrief({ company, location, product, docsText, runI
   const pitchFromCompany = await loadPitchingCompany();
   const pitchingOrg = pitchFromCompany || "your company";
   const prospectLabel = company || "the target company";
-  const pb =
-    promptBuilders && typeof promptBuilders.buildPersonaBriefPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  const prompt = pb.buildPersonaBriefPrompt({
-    prospectLabel,
-    pitchingOrg,
-    location,
-    product,
-    docsText,
-    companyName: company,
-  });
+  let prompt = "";
+  try {
+    const buildPersonaBriefPrompt = requirePromptBuilder("buildPersonaBriefPrompt");
+    prompt = buildPersonaBriefPrompt({
+      prospectLabel,
+      pitchingOrg,
+      location,
+      product,
+      docsText,
+      companyName: company,
+    });
+  } catch (err) {
+    return { error: err?.message || String(err), attempts: [] };
+  }
 
   const resp = await callLlmWithRetry(prompt, {
     model: LLAMA_33_MODEL,
@@ -3254,11 +3084,13 @@ async function fetchProductContext({ product }) {
   const trimmedProduct = typeof product === "string" ? product.trim() : "";
   if (!trimmedProduct) return { context: "", rawText: "", error: "Product name is missing." };
 
-  const pb =
-    promptBuilders && typeof promptBuilders.buildProductContextPrompt === "function"
-      ? promptBuilders
-      : fallbackPrompts;
-  const prompt = pb.buildProductContextPrompt({ product: trimmedProduct });
+  let prompt = "";
+  try {
+    const buildProductContextPrompt = requirePromptBuilder("buildProductContextPrompt");
+    prompt = buildProductContextPrompt({ product: trimmedProduct });
+  } catch (err) {
+    return { context: "", rawText: "", error: err?.message || String(err) };
+  }
 
   try {
     const resp = await callLlmWithRetry(prompt, {

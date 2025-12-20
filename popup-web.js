@@ -59,10 +59,11 @@ const modalMaximizeBtn = modalHeader ? (() => {
   const btn = document.createElement('button');
   btn.id = 'modalMaximize';
   btn.type = 'button';
-  btn.className = 'ghost';
-  btn.textContent = '⛶';
+  btn.className = 'ghost modal-icon-button';
   btn.title = 'Toggle full height';
   btn.setAttribute('aria-label', 'Maximize modal');
+  btn.setAttribute('aria-pressed', 'false');
+  setModalButtonIcon(btn, 'maximize-2', 'Max');
   modalHeader.insertBefore(btn, modalClose);
   return btn;
 })() : null;
@@ -1600,12 +1601,23 @@ reviseEmailAllBtn?.addEventListener('click', () => openRevisionPlayground({ type
 revisePitchPersonaBtn?.addEventListener('click', () => openRevisionPlayground({ type: 'pitch', scope: 'single' }));
 revisePitchAllBtn?.addEventListener('click', () => openRevisionPlayground({ type: 'pitch', scope: 'all' }));
 
+function setModalButtonIcon(button, iconName, fallbackText = '') {
+  if (!button) return;
+  const icon = window.feather?.icons?.[iconName];
+  if (icon) {
+    button.innerHTML = icon.toSvg({ 'stroke-width': 1.9, width: 18, height: 18, 'aria-hidden': 'true' });
+    return;
+  }
+  button.textContent = fallbackText;
+}
+
 function closeModal() {
   if (modalRoot?.classList.contains('hidden')) return;
   if (modalContainer) modalContainer.classList.remove('modal-maximized');
   if (modalMaximizeBtn) {
-    modalMaximizeBtn.textContent = '⛶';
+    setModalButtonIcon(modalMaximizeBtn, 'maximize-2', 'Max');
     modalMaximizeBtn.setAttribute('aria-label', 'Maximize modal');
+    modalMaximizeBtn.setAttribute('aria-pressed', 'false');
   }
   if (typeof activeModalCleanup === 'function') {
     try {
@@ -1629,7 +1641,7 @@ function toggleModalMaximize(force) {
   if (!modalContainer || !modalMaximizeBtn) return;
   const next = force !== undefined ? force : !modalContainer.classList.contains('modal-maximized');
   modalContainer.classList.toggle('modal-maximized', next);
-  modalMaximizeBtn.textContent = next ? '🗗' : '⛶';
+  setModalButtonIcon(modalMaximizeBtn, next ? 'minimize-2' : 'maximize-2', next ? 'Res' : 'Max');
   modalMaximizeBtn.setAttribute('aria-label', next ? 'Restore modal size' : 'Maximize modal');
   modalMaximizeBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
 }

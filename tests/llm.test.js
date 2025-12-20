@@ -50,10 +50,22 @@ function test(name, fn) {
   tests.push({ name, fn });
 }
 
-function makeResponse({ ok = true, status = 200, body }) {
+function makeHeaders(map = {}) {
+  return {
+    get: (name) => {
+      if (!name || typeof name !== "string") return null;
+      const key = name.toLowerCase();
+      const entry = Object.entries(map).find(([k]) => k.toLowerCase() === key);
+      return entry ? entry[1] : null;
+    },
+  };
+}
+
+function makeResponse({ ok = true, status = 200, body, headers = {} }) {
   return {
     ok,
     status,
+    headers: makeHeaders(headers),
     text: async () => body,
   };
 }
@@ -146,11 +158,38 @@ test("callGroqDirect surfaces tool-call-only responses as errors", async () => {
   assert.ok(String(resp.error).includes("tool calls"));
 });
 
+test("callGroqDirect captures rate limit headers", async () => {
+  mockFetchSequence([
+    makeResponse({
+      ok: false,
+      status: 429,
+      headers: {
+        "retry-after": "2",
+        "x-ratelimit-limit-tokens": "60000",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-tokens": "3",
+      },
+      body: JSON.stringify({
+        error: { message: "rate_limit_exceeded" },
+      }),
+    }),
+  ]);
+
+  const resp = await callGroqDirect("prompt", {}, { groqKey: "test-key", model: "openai/gpt-oss-120b" });
+  assert.ok(resp.error);
+  assert.ok(resp.rateLimit);
+  assert.strictEqual(resp.rateLimit.limitTokens, 60000);
+  assert.strictEqual(resp.rateLimit.remainingTokens, 0);
+  assert.strictEqual(resp.rateLimit.resetTokensMs, 3000);
+  assert.ok(resp.rateLimit.retryAfterMs >= 2000);
+});
+
 test("callGroqWithRetry falls back after 429", async () => {
   mockFetchSequence([
     makeResponse({
       ok: false,
       status: 429,
+      headers: { "retry-after": "0" },
       body: JSON.stringify({ error: { message: "rate" } }),
     }),
     makeResponse({

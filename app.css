@@ -750,9 +750,11 @@ button.primary:focus-visible {
 
 #modalMaximize {
     margin-left: auto;
-    font-size: 1.1rem;
-    min-width: 40px;
-    padding: 8px 10px;
+    min-width: 0;
+    width: 36px;
+    height: 36px;
+    padding: 6px;
+    border-radius: 6px;
 }
 
 .modal-header h3 {
@@ -769,17 +771,22 @@ button.primary:focus-visible {
     justify-content: center;
 }
 
+.modal-header button svg {
+    width: 18px;
+    height: 18px;
+}
+
 .modal-close-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
 }
 
 .modal-close-icon svg {
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
 }
 
 .modal-footer {

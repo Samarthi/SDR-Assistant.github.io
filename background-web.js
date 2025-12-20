@@ -304,6 +304,53 @@ function translateToolsToGroq(tools, disableDefaultTools) {
   return { tools: translated, choice: translated.length ? "auto" : undefined };
 }
 
+function parseRetryAfterMs(headers) {
+  if (!headers || typeof headers.get !== "function") return null;
+  const raw = headers.get("retry-after");
+  if (!raw) return null;
+  const num = Number(raw);
+  if (Number.isFinite(num)) return Math.max(0, num * 1000);
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? Math.max(0, ts - Date.now()) : null;
+}
+
+function parseHeaderInt(headers, name) {
+  if (!headers || typeof headers.get !== "function") return null;
+  const raw = headers.get(name);
+  if (raw === null || raw === undefined) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseSecondsHeaderToMs(headers, name) {
+  const val = parseHeaderInt(headers, name);
+  if (val === null) return null;
+  return Math.max(0, val * 1000);
+}
+
+function parseRateLimitHeaders(resp) {
+  const headers = resp && resp.headers;
+  if (!headers || typeof headers.get !== "function") return null;
+
+  const rateLimit = {
+    retryAfterMs: parseRetryAfterMs(headers),
+    limitRequests: parseHeaderInt(headers, "x-ratelimit-limit-requests"),
+    limitTokens: parseHeaderInt(headers, "x-ratelimit-limit-tokens"),
+    remainingRequests: parseHeaderInt(headers, "x-ratelimit-remaining-requests"),
+    remainingTokens: parseHeaderInt(headers, "x-ratelimit-remaining-tokens"),
+    resetRequestsMs: parseSecondsHeaderToMs(headers, "x-ratelimit-reset-requests"),
+    resetTokensMs: parseSecondsHeaderToMs(headers, "x-ratelimit-reset-tokens"),
+  };
+
+  const hasAny = Object.values(rateLimit).some((v) => v !== null && v !== undefined);
+  return hasAny ? rateLimit : null;
+}
+
+function addJitter(ms) {
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(0, ms + Math.floor(Math.random() * 251));
+}
+
 async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
   const storedKey = providerSettings && providerSettings.groqKey ? providerSettings.groqKey : "";
   let groqKey = storedKey;
@@ -401,20 +448,21 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
       body: JSON.stringify(body),
     });
 
+    const rateLimit = parseRateLimitHeaders(resp);
     const respText = await resp.text();
     let respJson = null;
     try {
       respJson = JSON.parse(respText);
     } catch (err) {
       if (!resp.ok) {
-        return { error: `Groq API error (Status ${resp.status}): ${respText}`, status: resp.status };
+        return { error: `Groq API error (Status ${resp.status}): ${respText}`, status: resp.status, rateLimit };
       }
-      return { error: "Failed to parse Groq API response as JSON.", details: respText, status: resp.status };
+      return { error: "Failed to parse Groq API response as JSON.", details: respText, status: resp.status, rateLimit };
     }
 
     if (!resp.ok) {
       const message = respJson?.error?.message || respText;
-      return { error: `Groq API error: ${message}`, details: respJson, status: resp.status };
+      return { error: `Groq API error: ${message}`, details: respJson, status: resp.status, rateLimit };
     }
 
     let statusCode = resp.status;
@@ -439,12 +487,13 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
           error: "Model returned tool calls without textual content.",
           details: respJson || { tool_calls: toolCalls },
           status: statusCode,
+          rateLimit,
         };
       }
-      return { error: "Could not find text in Groq response.", details: respJson, status: statusCode };
+      return { error: "Could not find text in Groq response.", details: respJson, status: statusCode, rateLimit };
     }
 
-    return { ok: true, text: outputText, raw: respJson, status: statusCode };
+    return { ok: true, text: outputText, raw: respJson, status: statusCode, rateLimit };
   } catch (err) {
     return { error: `Network request failed: ${String(err)}` };
   }
@@ -464,57 +513,104 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
     secondaryModelOverride ||
     (primaryModel === GROQ_SECONDARY_MODEL ? DEFAULT_LLM_MODELS[LLMProvider.GROQ] : GROQ_SECONDARY_MODEL);
 
-  const primary = await callGroqDirect(
-    promptText,
-    {
-      ...opts,
-      model: primaryModel,
-    },
-    { ...providerSettings, model: primaryModel }
-  );
-  if (!primary.error) {
-    return primary;
-  }
-
-  const attempts = [
-    {
-      label: "primary",
-      error: primary.error,
-      details: primary.details || primary.raw || null,
-    },
-  ];
-
+  const attempts = [];
   const boostedMaxTokens = Math.min(
     typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.2) : 4800,
     16000
   );
+  const maxAttempts = Math.max(1, Math.min(opts.maxAttempts || 3, 5));
+  let currentModel = primaryModel;
+  let attemptIndex = 0;
+  let lastError = null;
 
-  const shouldFallbackModel = primary.status === 429;
+  const computeWaitMs = (rateLimit, status) => {
+    if (!rateLimit) return null;
+    const MAX_WAIT_MS = 60000;
 
-  const retry = await callGroqDirect(
-    promptText,
-    {
-      ...opts,
-      model: shouldFallbackModel ? secondaryModel : primaryModel,
-      generationConfig: {
-        ...baseConfig,
-        temperature: Math.max(0, Math.min(baseConfig.temperature ?? 0.3, 0.7)),
-        maxOutputTokens: boostedMaxTokens,
+    let waitMs = null;
+    if (status === 429 && Number.isFinite(rateLimit.retryAfterMs)) {
+      waitMs = rateLimit.retryAfterMs;
+    }
+
+    if (waitMs === null) {
+      const resets = []
+        .concat(Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
+        .concat(Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
+      if (resets.length) {
+        waitMs = Math.min(...resets);
+      }
+    }
+
+    if (waitMs === null && status === 429) {
+      waitMs = 300;
+    }
+
+    if (waitMs === null) {
+      const lowTokens = Number.isFinite(rateLimit.remainingTokens) && rateLimit.remainingTokens <= 1;
+      const lowRequests = Number.isFinite(rateLimit.remainingRequests) && rateLimit.remainingRequests <= 1;
+      const proactiveResets = []
+        .concat(lowTokens && Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
+        .concat(lowRequests && Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
+      if (proactiveResets.length) {
+        waitMs = Math.min(...proactiveResets);
+      }
+    }
+
+    if (waitMs === null || !Number.isFinite(waitMs)) return null;
+    return Math.min(MAX_WAIT_MS, Math.max(0, waitMs));
+  };
+
+  while (attemptIndex < maxAttempts) {
+    const useBoostedConfig = attemptIndex > 0;
+    const generationConfig = useBoostedConfig
+      ? {
+          ...baseConfig,
+          temperature: Math.max(0, Math.min(baseConfig.temperature ?? 0.3, 0.7)),
+          maxOutputTokens: boostedMaxTokens,
+        }
+      : baseConfig;
+
+    const resp = await callGroqDirect(
+      promptText,
+      {
+        ...opts,
+        model: currentModel,
+        generationConfig,
       },
-    },
-    { ...providerSettings, model: shouldFallbackModel ? secondaryModel : primaryModel }
-  );
+      { ...providerSettings, model: currentModel }
+    );
 
-  if (retry.error) {
+    if (!resp.error) {
+      return attemptIndex === 0 ? resp : { ...resp, attempts };
+    }
+
     attempts.push({
-      label: shouldFallbackModel ? "retry_model_switch" : "retry_light",
-      error: retry.error,
-      details: retry.details || retry.raw || null,
+      label:
+        attemptIndex === 0
+          ? "primary"
+          : resp.status === 429 && currentModel !== primaryModel
+            ? "retry_model_switch"
+            : "retry",
+      error: resp.error,
+      details: resp.details || resp.raw || resp.rateLimit || null,
+      status: resp.status,
+      rateLimit: resp.rateLimit,
     });
-    return { ...retry, attempts };
+
+    lastError = resp;
+    attemptIndex += 1;
+    if (attemptIndex >= maxAttempts) break;
+
+    const waitMs = addJitter(computeWaitMs(resp.rateLimit, resp.status));
+    if (Number.isFinite(waitMs) && waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
+    const shouldSwitchModel = resp.status === 429 && secondaryModel && secondaryModel !== currentModel;
+    currentModel = shouldSwitchModel ? secondaryModel : currentModel;
   }
 
-  return { ...retry, attempts };
+  return { ...lastError, attempts };
 }
 
 async function callLlmWithRetry(promptText, opts = {}) {

@@ -223,7 +223,7 @@ Context docs (first 4000 chars each):
 ${docsText || "(no docs provided)"}
 
 Return markdown only with exactly three lines (no headings, no code fences):
-HQ Location: City, State/Region, Country
+HQ Location: City/Town, State/Region, Country
 Revenue: realistic revenue string or "Unknown"
 Sector: primary industry sector`;
   }
@@ -249,7 +249,7 @@ Context docs (first 4000 chars each):
 ${docsText || "(no docs provided)"}
 
 Include a LinkedIn People search keyword string for each persona that would help find the right titles at ${companyName || "the company"} for ${product}. Do not return a LinkedIn URL - only the keyword string.
-
+Return a loose keyword search string that always includes the corporation name at the front. Put each position title (including synonyms/abbreviations) in double quotes and separate titles with OR (e.g., CompanyName "VP Security" OR "Head of Security" OR "CISO"). Do not use AND conditions.
 Return markdown only. Provide one bullet per persona using this format (no headings, no code fences):
 - Name=<Full name>; Title=<Job title>; Department=<Department>; SearchLink=<ZoomInfo/LinkedIn style Google search link>; LinkedInKeywords=<keyword string for LinkedIn People search>`;
   }

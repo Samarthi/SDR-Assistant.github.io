@@ -31,6 +31,20 @@ const DEFAULT_LLM_MODELS = {
 const GROQ_LEGACY_MODEL = "gpt-oss-20b";
 const GROQ_SECONDARY_MODEL = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
 const LLAMA_33_MODEL = "llama-3.3-70b-versatile";
+const BRIEF_MODULES = {
+  OVERVIEW: "overview",
+  TOP_NEWS: "topNews",
+  PERSONAS: "personas",
+  EMAILS: "emails",
+  TELE_PITCH: "telePitch",
+};
+const DEFAULT_BRIEF_MODULES = {
+  [BRIEF_MODULES.OVERVIEW]: true,
+  [BRIEF_MODULES.TOP_NEWS]: true,
+  [BRIEF_MODULES.PERSONAS]: true,
+  [BRIEF_MODULES.EMAILS]: true,
+  [BRIEF_MODULES.TELE_PITCH]: true,
+};
 
 function loadPromptBuilders() {
   if (typeof self !== "undefined" && self.Prompts) return self.Prompts;
@@ -66,6 +80,35 @@ function requirePromptBuilder(name) {
   const builder = promptBuilders && typeof promptBuilders[name] === "function" ? promptBuilders[name] : null;
   if (builder) return builder;
   throw new Error(`Prompt builder "${name}" is unavailable. Ensure prompts.js is loaded.`);
+}
+
+function normalizeBriefModules(value) {
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_BRIEF_MODULES };
+  }
+  const next = { ...DEFAULT_BRIEF_MODULES };
+  Object.keys(DEFAULT_BRIEF_MODULES).forEach((key) => {
+    if (typeof value[key] === "boolean") {
+      next[key] = value[key];
+    }
+  });
+  return next;
+}
+
+function resolveBriefModules(value) {
+  const next = normalizeBriefModules(value);
+  if (next[BRIEF_MODULES.EMAILS]) {
+    next[BRIEF_MODULES.PERSONAS] = true;
+  }
+  if (next[BRIEF_MODULES.TELE_PITCH]) {
+    next[BRIEF_MODULES.PERSONAS] = true;
+  }
+  return next;
+}
+
+function getBriefProgressTotal(modules) {
+  const resolved = resolveBriefModules(modules);
+  return Object.keys(DEFAULT_BRIEF_MODULES).reduce((sum, key) => sum + (resolved[key] ? 1 : 0), 0);
 }
 
 function emitBriefProgress({ runId, current, total, label }) {
@@ -754,7 +797,7 @@ function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "", productH
     const name = kv.name || kv.persona || `Persona ${idx + 1}`;
     const designation = kv.title || kv.designation || "";
     const department = kv.department || kv.dept || "";
-    const linkedinKeywords =
+    const rawLinkedinKeywords =
       kv.linkedin_keywords || kv.linkedinsearch || kv.linkedinquery || kv.linkedin || kv.linkedinkeywords || "";
     const link =
       kv.searchlink ||
@@ -764,14 +807,20 @@ function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "", productH
       kv.zoom ||
       kv.link ||
       "";
+    let linkedinKeywords = normalizeLinkedInKeywords(
+      rawLinkedinKeywords,
+      fallbackCompany,
+      designation || department || productHint || ""
+    );
+    if (!linkedinKeywords) {
+      linkedinKeywords = buildLinkedInKeywordFallback({ name, designation, department }, fallbackCompany, productHint);
+    }
     personas.push({
       name,
       designation,
       department,
       linkedin_keywords: linkedinKeywords || "",
-      linkedin_search_url: toLinkedInPeopleSearchUrl(
-        linkedinKeywords || buildLinkedInKeywordFallback({ name, designation, department }, fallbackCompany, productHint)
-      ),
+      linkedin_search_url: toLinkedInPeopleSearchUrl(linkedinKeywords),
       zoominfo_link: link || buildZoomInfoSearchLink({ name, designation, department }, fallbackCompany),
     });
   });
@@ -1019,8 +1068,42 @@ function parseMarkdownTable(markdown = "") {
   return { headers, rows };
 }
 
+function escapeRegex(str = "") {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeLinkedInKeywordString(raw = "") {
+  return String(raw || "")
+    .replace(/[“”"]/g, "")
+    .replace(/\b(?:OR|AND)\b/gi, " ")
+    .replace(/[|/]/g, " ")
+    .replace(/[,;]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLinkedInKeywords(rawKeywords = "", companyName = "", positionHint = "") {
+  const company = sanitizeLinkedInKeywordString(companyName);
+  const parts = String(rawKeywords || "")
+    .split(/(?:\bOR\b|\bAND\b|[,/|;])/i)
+    .map(sanitizeLinkedInKeywordString)
+    .filter(Boolean);
+
+  let primary = parts.length ? parts[0] : sanitizeLinkedInKeywordString(positionHint);
+
+  if (company && primary) {
+    const companyRe = new RegExp(`\\b${escapeRegex(company)}\\b`, "ig");
+    primary = sanitizeLinkedInKeywordString(primary.replace(companyRe, ""));
+  }
+
+  if (!primary) primary = sanitizeLinkedInKeywordString(positionHint);
+
+  const keywords = [company, primary].filter(Boolean).join(" ").trim();
+  return sanitizeLinkedInKeywordString(keywords);
+}
+
 function toLinkedInPeopleSearchUrl(searchString) {
-  const q = (searchString ?? "").trim();
+  const q = sanitizeLinkedInKeywordString(searchString ?? "");
   if (!q) {
     return "https://www.linkedin.com/search/results/people/?keywords=&origin=SWITCH_SEARCH_VERTICAL";
   }
@@ -1032,15 +1115,8 @@ function toLinkedInPeopleSearchUrl(searchString) {
 }
 
 function buildLinkedInKeywordFallback(persona = {}, companyName = "", productName = "") {
-  const parts = [];
-
-  if (persona.designation) parts.push(persona.designation.trim());
-  if (persona.department) parts.push(persona.department.trim());
-  if (companyName) parts.push(companyName.trim());
-  if (productName) parts.push(productName.trim());
-  if (persona.name) parts.push(persona.name.trim());
-
-  return parts.filter(Boolean).join(" ").trim();
+  const positionHint = persona.designation || persona.department || productName || persona.name || "";
+  return normalizeLinkedInKeywords(positionHint, companyName, positionHint);
 }
 
 function buildZoomInfoSearchLink(persona, companyName) {
@@ -1997,6 +2073,7 @@ async function saveResearchHistoryEntry(request, result) {
       },
       result: {
         brief_html: result.brief_html || "",
+        modules: result.modules || {},
         company_name: result.company_name || request.company || "",
         revenue_estimate: result.revenue_estimate || "",
         top_5_news: Array.isArray(result.top_5_news) ? result.top_5_news : [],
@@ -2550,18 +2627,25 @@ async function generatePersonaEmails({ personas, company, location, product, doc
 
 function normalizePersonas(rawPersonas, companyName) {
   if (!Array.isArray(rawPersonas)) return [];
-  return rawPersonas.map((p = {}) => ({
-    name: p.name || "",
-    designation: p.designation || "",
-    department: p.department || "",
-    linkedin_keywords: p.linkedin_keywords || p.linkedinKeywords || "",
-    linkedin_search_url: toLinkedInPeopleSearchUrl(
-      (p.linkedin_keywords || p.linkedinKeywords || "").trim() ||
-        buildLinkedInKeywordFallback(p, companyName || "", p.product || "")
-    ),
-    zoominfo_link:
-      p.zoominfo_link || p.zoomInfo || p.zoominfo || p.zoom || buildZoomInfoSearchLink(p, companyName || ""),
-  }));
+  return rawPersonas.map((p = {}) => {
+    let linkedinKeywords = normalizeLinkedInKeywords(
+      p.linkedin_keywords || p.linkedinKeywords || "",
+      companyName || "",
+      p.designation || p.department || p.product || ""
+    );
+    if (!linkedinKeywords) {
+      linkedinKeywords = buildLinkedInKeywordFallback(p, companyName || "", p.product || "");
+    }
+    return {
+      name: p.name || "",
+      designation: p.designation || "",
+      department: p.department || "",
+      linkedin_keywords: linkedinKeywords,
+      linkedin_search_url: toLinkedInPeopleSearchUrl(linkedinKeywords),
+      zoominfo_link:
+        p.zoominfo_link || p.zoomInfo || p.zoominfo || p.zoom || buildZoomInfoSearchLink(p, companyName || ""),
+    };
+  });
 }
 
 function normalizePersonaEmails(rawPersonas = [], personaEmailsArray = []) {
@@ -2961,7 +3045,18 @@ async function generateBriefOverview({ company, location, product, docsText }) {
   return response;
 }
 
-async function generatePersonaBrief({ company, location, product, docsText, runId }) {
+async function generatePersonaBrief({
+  company,
+  location,
+  product,
+  docsText,
+  runId,
+  includeEmails = true,
+  includeTelephonicPitch = true,
+  onPersonasDone,
+  onEmailsDone,
+  onTelephonicDone,
+}) {
   const pitchFromCompany = await loadPitchingCompany();
   const pitchingOrg = pitchFromCompany || "your company";
   const prospectLabel = company || "the target company";
@@ -3005,46 +3100,64 @@ async function generatePersonaBrief({ company, location, product, docsText, runI
       personas,
     });
   }
+  if (typeof onPersonasDone === "function") {
+    onPersonasDone({ personas });
+  }
 
-  const emailPromise = generatePersonaEmails({
-    personas,
-    company,
-    location,
-    product,
-    docsText,
-    pitchFromCompany: pitchingOrg,
-  });
-  const telephonicPromise = generateTelephonicPitchScripts({
-    personas,
-    company,
-    location,
-    product,
-    docsText,
-    pitchFromCompany: pitchingOrg,
-  });
+  const emailPromise = includeEmails
+    ? generatePersonaEmails({
+        personas,
+        company,
+        location,
+        product,
+        docsText,
+        pitchFromCompany: pitchingOrg,
+      })
+    : Promise.resolve({ personaEmails: [], attempts: [], error: "" });
+  const telephonicPromise = includeTelephonicPitch
+    ? generateTelephonicPitchScripts({
+        personas,
+        company,
+        location,
+        product,
+        docsText,
+        pitchFromCompany: pitchingOrg,
+      })
+    : Promise.resolve({ pitches: [], attempts: [], error: "" });
 
   if (runId) {
-    emailPromise
-      .then((res) => {
-        const personaEmails = Array.isArray(res?.personaEmails) ? res.personaEmails : [];
-        const email = derivePrimaryEmail({ persona_emails: personaEmails }, personaEmails);
-        emitBriefPartialUpdate(runId, {
-          personaEmails,
-          email,
-        });
-      })
-      .catch(() => {});
+    if (includeEmails) {
+      emailPromise
+        .then((res) => {
+          const personaEmails = Array.isArray(res?.personaEmails) ? res.personaEmails : [];
+          const email = derivePrimaryEmail({ persona_emails: personaEmails }, personaEmails);
+          emitBriefPartialUpdate(runId, {
+            personaEmails,
+            email,
+          });
+        })
+        .catch(() => {});
+    }
 
-    telephonicPromise
-      .then((res) => {
-        const telephonicPitches = Array.isArray(res?.pitches) ? res.pitches : [];
-        emitBriefPartialUpdate(runId, {
-          telephonicPitches,
-          telephonicPitchError: res?.error || "",
-          telephonicPitchAttempts: res?.attempts || [],
-        });
-      })
-      .catch(() => {});
+    if (includeTelephonicPitch) {
+      telephonicPromise
+        .then((res) => {
+          const telephonicPitches = Array.isArray(res?.pitches) ? res.pitches : [];
+          emitBriefPartialUpdate(runId, {
+            telephonicPitches,
+            telephonicPitchError: res?.error || "",
+            telephonicPitchAttempts: res?.attempts || [],
+          });
+        })
+        .catch(() => {});
+    }
+  }
+
+  if (includeEmails && typeof onEmailsDone === "function") {
+    emailPromise.finally(() => onEmailsDone());
+  }
+  if (includeTelephonicPitch && typeof onTelephonicDone === "function") {
+    telephonicPromise.finally(() => onTelephonicDone());
   }
 
   const [emailResult, telephonicResult] = await Promise.allSettled([emailPromise, telephonicPromise]);
@@ -3064,15 +3177,17 @@ async function generatePersonaBrief({ company, location, product, docsText, runI
     ? resolvedTelephonicResult.pitches
     : [];
 
-  const telephonicPitchError = resolvedTelephonicResult.error || (!telephonicPitches.length ? "No telephonic pitch generated." : "") || "";
-  const telephonicPitchAttempts = resolvedTelephonicResult.attempts || [];
+  const telephonicPitchError = includeTelephonicPitch
+    ? (resolvedTelephonicResult.error || (!telephonicPitches.length ? "No telephonic pitch generated." : "") || "")
+    : "";
+  const telephonicPitchAttempts = includeTelephonicPitch ? (resolvedTelephonicResult.attempts || []) : [];
 
-  const email = derivePrimaryEmail({ persona_emails: personaEmails }, personaEmails);
+  const email = includeEmails ? derivePrimaryEmail({ persona_emails: personaEmails }, personaEmails) : { subject: "", body: "" };
 
   return {
     personas,
-    personaEmails,
-    telephonicPitches,
+    personaEmails: includeEmails ? personaEmails : [],
+    telephonicPitches: includeTelephonicPitch ? telephonicPitches : [],
     telephonicPitchError,
     telephonicPitchAttempts,
     email,
@@ -3118,9 +3233,14 @@ async function fetchProductContext({ product }) {
   }
 }
 
-async function generateBrief({ company, location, product, docs = [], runId }) {
+async function generateBrief({ company, location, product, docs = [], runId, modules }) {
   try {
-    let totalSteps = 2;
+    const resolvedModules = resolveBriefModules(modules);
+    const moduleSteps = getBriefProgressTotal(resolvedModules);
+    if (!moduleSteps) {
+      return { error: "No brief sections enabled.", modules: resolvedModules };
+    }
+    let totalSteps = moduleSteps;
     let completedSteps = 0;
     emitBriefProgress({
       runId,
@@ -3134,7 +3254,15 @@ async function generateBrief({ company, location, product, docs = [], runId }) {
       return `--- ${d.name || "doc"} ---\n${txt.substring(0, 4000)}`;
     }).join("\n\n");
 
-    if (!docsText.trim() && product) {
+    if (
+      !docsText.trim() &&
+      product &&
+      (resolvedModules[BRIEF_MODULES.OVERVIEW] ||
+        resolvedModules[BRIEF_MODULES.TOP_NEWS] ||
+        resolvedModules[BRIEF_MODULES.PERSONAS] ||
+        resolvedModules[BRIEF_MODULES.EMAILS] ||
+        resolvedModules[BRIEF_MODULES.TELE_PITCH])
+    ) {
       const productContextResult = await fetchProductContext({ product });
       if (productContextResult.context) {
         docsText = `--- Product context (web search) ---\n${productContextResult.context}`;
@@ -3151,71 +3279,134 @@ async function generateBrief({ company, location, product, docs = [], runId }) {
       });
     };
 
-    const overviewPromise = generateBriefOverview({
-      company,
-      location,
-      product,
-      docsText,
-    })
-      .then((res) => {
-        stepDone(res.error ? "Overview generation failed" : "Overview generated");
-        const overview = res.overview || {};
-        emitBriefPartialUpdate(runId, {
-          overview,
-          hq_location: overview.hq_location || "",
-          hq_lookup_error: res.hq_error || res.error || "",
-        });
-        if (res.error) {
-          emitBriefPartialUpdate(runId, { overview_error: res.error });
-        }
-        return res;
-      })
-      .catch((err) => {
-        const errorMsg = err?.message || String(err);
-        stepDone("Overview generation failed");
-        emitBriefPartialUpdate(runId, { overview_error: errorMsg, hq_lookup_error: errorMsg });
-        return { error: errorMsg };
-      });
-
-    const personaPromise = generatePersonaBrief({
-      company,
-      location,
-      product,
-      docsText,
-      runId,
-    })
-      .then((res) => {
-        stepDone(res.error ? "Persona generation failed" : "Persona outreach generated");
-        if (res.error) {
-          emitBriefPartialUpdate(runId, { persona_error: res.error });
-        } else {
+    const overviewPromise = resolvedModules[BRIEF_MODULES.OVERVIEW]
+      ? fetchHqRevenueAndSector({ company, locationHint: location, product, docsText })
+        .then((res) => {
+          stepDone(res.error ? "Overview generation failed" : "Overview generated");
+          const overview = res.overview || {};
           emitBriefPartialUpdate(runId, {
-            personas: res.personas,
-            personaEmails: res.personaEmails,
-            telephonicPitches: res.telephonicPitches,
-            telephonicPitchError: res.telephonicPitchError,
-            telephonicPitchAttempts: res.telephonicPitchAttempts,
-            email: res.email,
+            overview,
+            hq_location: overview.hq_location || "",
+            hq_lookup_error: res.hq_error || res.error || "",
           });
-        }
-        return res;
+          if (res.error) {
+            emitBriefPartialUpdate(runId, { overview_error: res.error });
+          }
+          return res;
+        })
+        .catch((err) => {
+          const errorMsg = err?.message || String(err);
+          stepDone("Overview generation failed");
+          emitBriefPartialUpdate(runId, { overview_error: errorMsg, hq_lookup_error: errorMsg });
+          return { error: errorMsg, overview: { company_name: company, hq_location: "", revenue_estimate: "", industry_sector: "" } };
+        })
+      : Promise.resolve({ overview: { company_name: company || "", hq_location: "", revenue_estimate: "", industry_sector: "" }, rawText: "", error: "" });
+
+    const newsPromise = resolvedModules[BRIEF_MODULES.TOP_NEWS]
+      ? fetchRecentNewsEntries({ company, location, docsText })
+        .then((res) => {
+          stepDone(res.error ? "Top news failed" : "Top news generated");
+          const topNews = Array.isArray(res?.topNews) ? res.topNews : [];
+          emitBriefPartialUpdate(runId, { top_5_news: topNews });
+          if (res.error) {
+            emitBriefPartialUpdate(runId, { overview_error: res.error });
+          }
+          return res;
+        })
+        .catch((err) => {
+          const errorMsg = err?.message || String(err);
+          stepDone("Top news failed");
+          emitBriefPartialUpdate(runId, { overview_error: errorMsg });
+          return { error: errorMsg, topNews: [], rawText: "" };
+        })
+      : Promise.resolve({ topNews: [], rawText: "", error: "" });
+
+    let personasStepDone = false;
+    let emailStepDone = false;
+    let telephonicStepDone = false;
+    const personaPromise = resolvedModules[BRIEF_MODULES.PERSONAS]
+      ? generatePersonaBrief({
+        company,
+        location,
+        product,
+        docsText,
+        runId,
+        includeEmails: resolvedModules[BRIEF_MODULES.EMAILS],
+        includeTelephonicPitch: resolvedModules[BRIEF_MODULES.TELE_PITCH],
+        onPersonasDone: () => {
+          if (personasStepDone) return;
+          personasStepDone = true;
+          stepDone("Personas generated");
+        },
+        onEmailsDone: resolvedModules[BRIEF_MODULES.EMAILS]
+          ? () => {
+              if (emailStepDone) return;
+              emailStepDone = true;
+              stepDone("Emails generated");
+            }
+          : null,
+        onTelephonicDone: resolvedModules[BRIEF_MODULES.TELE_PITCH]
+          ? () => {
+              if (telephonicStepDone) return;
+              telephonicStepDone = true;
+              stepDone("Telephonic pitches generated");
+            }
+          : null,
       })
-      .catch((err) => {
-        const errorMsg = err?.message || String(err);
-        stepDone("Persona generation failed");
-        emitBriefPartialUpdate(runId, { persona_error: errorMsg });
-        return {
-          error: errorMsg,
-          personas: [],
-          personaEmails: [],
-          telephonicPitches: [],
-          telephonicPitchError: errorMsg,
-          telephonicPitchAttempts: [],
-          email: { subject: "", body: "" },
-        };
+        .then((res) => {
+          if (res.error && !personasStepDone) {
+            personasStepDone = true;
+            stepDone("Persona generation failed");
+          }
+          if (res.error) {
+            emitBriefPartialUpdate(runId, { persona_error: res.error });
+            if (resolvedModules[BRIEF_MODULES.EMAILS] && !emailStepDone) {
+              emailStepDone = true;
+              stepDone("Emails skipped");
+            }
+            if (resolvedModules[BRIEF_MODULES.TELE_PITCH] && !telephonicStepDone) {
+              telephonicStepDone = true;
+              stepDone("Telephonic pitches skipped");
+            }
+          }
+          return res;
+        })
+        .catch((err) => {
+          const errorMsg = err?.message || String(err);
+          if (!personasStepDone) {
+            personasStepDone = true;
+            stepDone("Persona generation failed");
+          }
+          if (resolvedModules[BRIEF_MODULES.EMAILS] && !emailStepDone) {
+            emailStepDone = true;
+            stepDone("Emails skipped");
+          }
+          if (resolvedModules[BRIEF_MODULES.TELE_PITCH] && !telephonicStepDone) {
+            telephonicStepDone = true;
+            stepDone("Telephonic pitches skipped");
+          }
+          emitBriefPartialUpdate(runId, { persona_error: errorMsg });
+          return {
+            error: errorMsg,
+            personas: [],
+            personaEmails: [],
+            telephonicPitches: [],
+            telephonicPitchError: "",
+            telephonicPitchAttempts: [],
+            email: { subject: "", body: "" },
+          };
+        })
+      : Promise.resolve({
+        personas: [],
+        personaEmails: [],
+        telephonicPitches: [],
+        telephonicPitchError: "",
+        telephonicPitchAttempts: [],
+        email: { subject: "", body: "" },
+        error: "",
       });
 
-    const [overviewResult, personaResult] = await Promise.all([overviewPromise, personaPromise]);
+    const [overviewResult, newsResult, personaResult] = await Promise.all([overviewPromise, newsPromise, personaPromise]);
 
     completedSteps = Math.max(completedSteps, totalSteps);
     emitBriefProgress({
@@ -3225,13 +3416,17 @@ async function generateBrief({ company, location, product, docs = [], runId }) {
       label: "Brief ready",
     });
 
-    const overview = overviewResult?.overview || {};
-    const topNews = Array.isArray(overview.top_5_news) ? overview.top_5_news : [];
-    const industrySector = overview.industry_sector || overview.industrySector || overview.industry || "";
-    const revenueEstimate = overview.revenue_estimate || "";
+    const overview = overviewResult?.overview || { company_name: company || "", hq_location: "", revenue_estimate: "", industry_sector: "" };
+    const topNews = resolvedModules[BRIEF_MODULES.TOP_NEWS] && Array.isArray(newsResult?.topNews) ? newsResult.topNews : [];
+    const industrySector = resolvedModules[BRIEF_MODULES.OVERVIEW]
+      ? (overview.industry_sector || overview.industrySector || overview.industry || "")
+      : "";
+    const revenueEstimate = resolvedModules[BRIEF_MODULES.OVERVIEW] ? (overview.revenue_estimate || "") : "";
 
-    const resolvedHqLocation = overview.hq_location || "";
-    const hqErrorMessage = overviewResult?.hq_error ? `HQ lookup failed: ${overviewResult.hq_error}` : "";
+    const resolvedHqLocation = resolvedModules[BRIEF_MODULES.OVERVIEW] ? (overview.hq_location || "") : "";
+    const hqErrorMessage = resolvedModules[BRIEF_MODULES.OVERVIEW] && overviewResult?.error
+      ? `HQ lookup failed: ${overviewResult.error}`
+      : "";
     const displayedHq = resolvedHqLocation || hqErrorMessage || "Not found";
     const displayedIndustry = industrySector || "Not found";
 
@@ -3240,28 +3435,42 @@ async function generateBrief({ company, location, product, docs = [], runId }) {
     const telephonicPitches = Array.isArray(personaResult?.telephonicPitches)
       ? personaResult.telephonicPitches
       : [];
-    const telephonicPitchError = personaResult?.telephonicPitchError || "";
-    const telephonicPitchAttempts = Array.isArray(personaResult?.telephonicPitchAttempts)
+    const telephonicPitchError = resolvedModules[BRIEF_MODULES.TELE_PITCH] ? (personaResult?.telephonicPitchError || "") : "";
+    const telephonicPitchAttempts = resolvedModules[BRIEF_MODULES.TELE_PITCH] && Array.isArray(personaResult?.telephonicPitchAttempts)
       ? personaResult.telephonicPitchAttempts
       : [];
     const emailObj = personaResult?.email || { subject: "", body: "" };
-    const personaEmailVersions = personaEmails.map((draft) => ({ versions: [draft], activeIndex: 0 }));
-    const telephonicPitchVersions = telephonicPitches.map((draft) => ({ versions: [draft], activeIndex: 0 }));
+    const personaEmailVersions = resolvedModules[BRIEF_MODULES.EMAILS]
+      ? personaEmails.map((draft) => ({ versions: [draft], activeIndex: 0 }))
+      : [];
+    const telephonicPitchVersions = resolvedModules[BRIEF_MODULES.TELE_PITCH]
+      ? telephonicPitches.map((draft) => ({ versions: [draft], activeIndex: 0 }))
+      : [];
 
-    const brief_html = buildBriefHtmlFromOverview({
-      companyName: overview.company_name || company,
-      hqDisplay: displayedHq,
-      revenue: revenueEstimate,
-      industry: displayedIndustry,
-      topNews,
-    });
+    const brief_html = resolvedModules[BRIEF_MODULES.OVERVIEW]
+      ? buildBriefHtmlFromOverview({
+          companyName: overview.company_name || company,
+          hqDisplay: displayedHq,
+          revenue: revenueEstimate,
+          industry: displayedIndustry,
+          topNews,
+        })
+      : "";
 
-    const overviewError = overviewResult?.error || "";
-    const personaError = personaResult?.error || "";
+    const overviewErrors = [];
+    if (resolvedModules[BRIEF_MODULES.OVERVIEW] && overviewResult?.error) {
+      overviewErrors.push(`overview: ${overviewResult.error}`);
+    }
+    if (resolvedModules[BRIEF_MODULES.TOP_NEWS] && newsResult?.error) {
+      overviewErrors.push(`news: ${newsResult.error}`);
+    }
+    const overviewError = overviewErrors.join(" | ");
+    const personaError = resolvedModules[BRIEF_MODULES.PERSONAS] ? (personaResult?.error || "") : "";
     const combinedError = overviewError && personaError ? `${overviewError}; ${personaError}` : "";
 
     return {
       brief_html,
+      modules: resolvedModules,
       company_name: overview.company_name || company,
       revenue_estimate: revenueEstimate,
       industry_sector: industrySector,
@@ -3278,16 +3487,16 @@ async function generateBrief({ company, location, product, docs = [], runId }) {
       email: emailObj,
       hq_location: resolvedHqLocation,
       hq_lookup_details: null,
-      hq_lookup_error: overviewResult?.hq_error || "",
-      hq_lookup_raw: overviewResult?.rawText || "",
-      raw_overview: overviewResult?.rawText || "",
-      raw_personas: personaResult?.rawText || "",
+      hq_lookup_error: resolvedModules[BRIEF_MODULES.OVERVIEW] ? (overviewResult?.error || "") : "",
+      hq_lookup_raw: resolvedModules[BRIEF_MODULES.OVERVIEW] ? (overviewResult?.rawText || "") : "",
+      raw_overview: resolvedModules[BRIEF_MODULES.OVERVIEW] ? (overviewResult?.rawText || "") : "",
+      raw_personas: resolvedModules[BRIEF_MODULES.PERSONAS] ? (personaResult?.rawText || "") : "",
       overview_error: overviewError,
       persona_error: personaError,
       error: combinedError || undefined,
     };
   } catch (err) {
-    return { error: String(err) };
+    return { error: String(err), modules: resolveBriefModules(modules) };
   }
 }
 chrome.action.onClicked.addListener((tab) => {
@@ -3358,7 +3567,14 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         }
         if (req.action === 'generateBrief') {
           markWeeklyActiveUser("generateBrief").catch(() => {});
-          const payload = { company: req.company, location: req.location, product: req.product, docs: req.docs || [], runId: req.runId };
+          const payload = {
+            company: req.company,
+            location: req.location,
+            product: req.product,
+            docs: req.docs || [],
+            runId: req.runId,
+            modules: req.modules,
+          };
           const startTs = Date.now();
           let result = null;
           let success = false;

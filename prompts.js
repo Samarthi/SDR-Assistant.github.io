@@ -48,9 +48,10 @@ Return markdown only as bullet points (no code fences). Use this format for each
   Instructions:
       - Research the product, company priorities, and each persona's responsibilities so the caller sounds well informed and relevant.
       - Build a 45-60 second phone script for every persona that starts with a personalized opener, adds one probing question, and ties ${product} to their KPIs.
-      - Maintain a confident, consultative tone that feels natural for a live call. Avoid long email-like sentences.
+      - Maintain a confident, consultative tone that feels natural for a live call. Avoid long email-like sentences. Use the use cases and numbers from the context documents to build a solid pitch and customize it according to the prospect's context.
       - Keep the telephonic script very crisp, short and sales friendly.
-      - Here's an example of telephonic pitch: "Hi [Name], this is [Your Name] calling from [Your Company]. Am I catching you at a good time for quick minute?
+      - Include at least 4-5 of the most unique selling points of the product from the context docs.
+      - Here's an example of a nice telephonic pitch, do not use this blindly: "Hi [Name], this is [Your Name] calling from [Your Company]. Am I catching you at a good time for quick minute?
       Great, thank you! I'll keep this really short. I work with companies in the [Target company sector]- helping them [your product feature verbs].
       You might have heard of [Your Product] - it's a solution that helps [Your Product Features]. 
       For a company like yours, where you're [Target Company Pain Point verbs], [Your Product] can [Your Product's Effects and Improvements].
@@ -91,7 +92,9 @@ ${docsText || "(no docs provided)"}
 Rules:
 - ${prospectLabel} is the prospect. Every email must be written from ${pitchingOrg}'s perspective pitching ${prospectLabel} on ${product}. Never reverse these roles.
 - Create a separate subject and body for every persona listed; ensure persona_name matches the persona you are writing for.
-- Emails must include a crisp subject and concise, sales-forward body tailored to that persona. Make the email very short, crisp and visually appealing with numbers and statistics from the documents uploaded. Here's an example of an email template:
+- Emails must include a crisp subject and concise, sales-forward body tailored to that persona.  Make the email crisp (with bullets for each point) and visually appealing with numbers and statistics from the documents uploaded. 
+- Including at least 4-5 most relevant unique selling points for the product from the context docs.
+- Here's an example of an email brief. Do not blindly use this. Build your own based on the data from context docs:
     Subject: PVR INOX: Guaranteed 90% Faster Content Delivery with IBM Aspera.
 
       Dear [Name],
@@ -259,7 +262,7 @@ Return markdown only. Provide one bullet per persona using this format (no headi
 Product: ${product}
 
 Requirements:
-- Rely on live web search to ground the summary; prefer recent, credible sources.
+- Rely on live web search to ground the summary; prefer recent, credible sources like the product's website.
 - Capture what the product does, who uses it, and 3-5 core use cases or problems it solves.
 - Keep it concise and factual.
 

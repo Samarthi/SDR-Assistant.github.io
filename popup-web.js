@@ -28,6 +28,7 @@ const personaTabs = document.getElementById('personaTabs');
 const telePersonaTabs = document.getElementById('telePersonaTabs');
 const editEmailDraftBtn = document.getElementById('editEmailDraft');
 const editTelePitchBtn = document.getElementById('editTelePitch');
+let toastRoot = document.getElementById('toastRoot');
 const reviseEmailPersonaBtn = document.getElementById('reviseEmailPersona');
 const reviseEmailAllBtn = document.getElementById('reviseEmailAll');
 const revisePitchPersonaBtn = document.getElementById('revisePitchPersona');
@@ -2369,9 +2370,11 @@ copyEmailBtn?.addEventListener('click', async () => {
 
   try {
     await navigator.clipboard.writeText(text);
-    if (status) {
     const personaLabel = getActivePersonaLabel();
-    status.innerText = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+    const msg = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+    showToast('Email copied');
+    if (status) {
+      status.innerText = msg;
       status.style.color = '';
     }
   } catch (err) {
@@ -2385,9 +2388,11 @@ copyEmailBtn?.addEventListener('click', async () => {
     try {
       const ok = document.execCommand('copy');
       if (ok) {
-        if (status) {
         const personaLabel = getActivePersonaLabel();
-        status.innerText = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+        const msg = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+        showToast('Email copied');
+        if (status) {
+          status.innerText = msg;
           status.style.color = '';
         }
       } else {
@@ -2428,6 +2433,35 @@ function setEditButtonIcon(button, label = 'Edit') {
   setModalButtonIcon(button, 'edit-3', '✎');
   button.setAttribute('aria-label', label);
   button.title = label;
+}
+
+function getToastRoot() {
+  if (!toastRoot || !document.body.contains(toastRoot)) {
+    toastRoot = document.getElementById('toastRoot');
+  }
+  if (!toastRoot) {
+    toastRoot = document.createElement('div');
+    toastRoot.id = 'toastRoot';
+    toastRoot.className = 'toast-root';
+    document.body.appendChild(toastRoot);
+  }
+  return toastRoot;
+}
+
+function showToast(message, options = {}) {
+  if (!message) return;
+  const root = getToastRoot();
+  if (!root) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  root.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  const duration = options.duration || 2200;
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 220);
+  }, duration);
 }
 
 function closeModal() {
@@ -2565,14 +2599,14 @@ function openRichTextModal({ title, initialValue = '', subjectLabel, initialSubj
           hideModeSwitch: true,
           initialValue: initialValue || '',
         });
-        contentGetter = () => editor.getMarkdown().trim();
+        contentGetter = () => editor.getMarkdown();
       } else {
         const fallback = document.createElement('textarea');
         fallback.value = initialValue || '';
         fallback.rows = 14;
         fallback.style.width = '100%';
         body.appendChild(fallback);
-        contentGetter = () => fallback.value.trim();
+        contentGetter = () => fallback.value;
       }
 
       const save = document.createElement('button');
@@ -2662,14 +2696,14 @@ function openTelePitchEditor() {
           hideModeSwitch: true,
           initialValue: initialContent,
         });
-        getValue = () => editor.getMarkdown().trim();
+        getValue = () => editor.getMarkdown();
       } else {
         const ta = document.createElement('textarea');
         ta.rows = 12;
         ta.style.width = '100%';
         ta.value = initialContent;
         body.appendChild(ta);
-        getValue = () => ta.value.trim();
+        getValue = () => ta.value;
       }
 
       const save = document.createElement('button');

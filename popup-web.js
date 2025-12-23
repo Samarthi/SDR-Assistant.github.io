@@ -204,6 +204,7 @@ let briefVersionCounter = 0;
 let briefVersions = [];
 let briefUiMode = 'form';
 let briefBarCollapsed = false;
+let hasGeneratedBrief = false;
 let historyEntries = [];
 let currentHistoryId = null;
 let targetHistoryEntries = [];
@@ -1170,6 +1171,26 @@ function setBriefEditDrawerCollapsed(collapsed) {
   }
 }
 
+function briefHasResults() {
+  return hasGeneratedBrief || briefVersionCounter > 0 || (Array.isArray(briefVersions) && briefVersions.length > 0);
+}
+
+function markBriefHasResults() {
+  hasGeneratedBrief = true;
+}
+
+function focusBriefInput(field) {
+  const map = {
+    company: companyEl,
+    location: locationEl,
+    product: productEl,
+  };
+  const target = map[field] || null;
+  if (target && typeof target.focus === 'function') {
+    target.focus();
+  }
+}
+
 function getActiveBriefStatusEl() {
   if (briefCommandBar && !briefCommandBar.hidden && briefBarStatus) {
     return briefBarStatus;
@@ -1295,6 +1316,119 @@ function buildBriefRequestFromForm() {
   };
 }
 
+function openBriefInputsModal({ focusField } = {}) {
+  const mergedRequest = { ...buildBriefRequestFromForm(), ...(currentBriefRequest || {}) };
+  mergedRequest.modules = Array.isArray(mergedRequest.modules) && mergedRequest.modules.length
+    ? mergedRequest.modules
+    : getEffectiveBriefModules();
+  mergedRequest.docs = getSelectedDocObjects(Mode.TARGETED_BRIEF);
+
+  openModal({
+    title: 'Edit brief inputs',
+    render: ({ body, footer, close }) => {
+      if (!body || !footer) return;
+
+      body.innerHTML = '';
+      footer.innerHTML = '';
+
+      const helper = document.createElement('div');
+      helper.className = 'modal-helper';
+      helper.textContent = 'Update the brief inputs without leaving the results view.';
+      body.appendChild(helper);
+
+      const section = document.createElement('div');
+      section.className = 'modal-section';
+      body.appendChild(section);
+
+      const buildField = (labelText, value, placeholder) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'input-card';
+        const label = document.createElement('label');
+        label.textContent = labelText;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = value || '';
+        if (placeholder) input.placeholder = placeholder;
+        wrapper.appendChild(label);
+        wrapper.appendChild(input);
+        section.appendChild(wrapper);
+        return input;
+      };
+
+      const companyInput = buildField('Company', mergedRequest.company, 'e.g., Infosys');
+      const locationInput = buildField('Location', mergedRequest.location, 'e.g., India');
+      const productInput = buildField('Product', mergedRequest.product, 'e.g., Cloud Security');
+
+      const quickActions = document.createElement('div');
+      quickActions.className = 'actions';
+      const docBtn = document.createElement('button');
+      docBtn.type = 'button';
+      docBtn.className = 'ghost';
+      docBtn.textContent = 'Manage documents';
+      docBtn.addEventListener('click', () => {
+        close();
+        openDocPickerModal(Mode.TARGETED_BRIEF);
+      });
+      quickActions.appendChild(docBtn);
+
+      const sectionsBtn = document.createElement('button');
+      sectionsBtn.type = 'button';
+      sectionsBtn.className = 'ghost';
+      sectionsBtn.textContent = 'Edit sections';
+      sectionsBtn.addEventListener('click', () => {
+        close();
+        openBriefSectionsModal({ mode: 'override', baseModules: mergedRequest.modules });
+      });
+      quickActions.appendChild(sectionsBtn);
+      section.appendChild(quickActions);
+
+      const applyInputs = () => {
+        const next = {
+          company: companyInput.value.trim(),
+          location: locationInput.value.trim(),
+          product: productInput.value.trim(),
+          modules: mergedRequest.modules,
+          docs: getSelectedDocObjects(Mode.TARGETED_BRIEF),
+        };
+        if (companyEl) companyEl.value = next.company;
+        if (locationEl) locationEl.value = next.location;
+        if (productEl) productEl.value = next.product;
+        currentBriefRequest = { ...currentBriefRequest, ...next };
+        updateBriefCommandBarFromRequest(currentBriefRequest);
+        showBriefBar();
+      };
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'ghost';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => close());
+
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'primary';
+      saveBtn.textContent = 'Save inputs';
+      saveBtn.addEventListener('click', () => {
+        applyInputs();
+        close();
+      });
+
+      footer.appendChild(cancelBtn);
+      footer.appendChild(saveBtn);
+
+      const focusMap = {
+        company: companyInput,
+        location: locationInput,
+        product: productInput,
+      };
+      const target = focusMap[focusField] || companyInput;
+      window.setTimeout(() => {
+        target?.focus?.();
+      }, 50);
+    },
+  });
+}
+
 async function runBriefGeneration(request) {
   const req = request || {};
   const company = (req.company || '').trim();
@@ -1303,7 +1437,12 @@ async function runBriefGeneration(request) {
   const modules = Array.isArray(req.modules) && req.modules.length ? req.modules : getEffectiveBriefModules();
   if (!company || !product) {
     setBriefStatusMessage('Company and Product required', { error: true });
-    setBriefEditDrawerCollapsed(false);
+    if (briefHasResults()) {
+      openBriefInputsModal({ focusField: !company ? 'company' : 'product' });
+    } else {
+      showBriefForm();
+      focusBriefInput(!company ? 'company' : 'product');
+    }
     return;
   }
   const totalSteps = getBriefProgressTotal(modules);
@@ -2239,6 +2378,7 @@ copyTargetsBtn?.addEventListener('click', async () => {
 
 function startNewResearch(mode = activeMode || Mode.TARGETED_BRIEF) {
   const normalizedMode = mode || Mode.TARGETED_BRIEF;
+  hasGeneratedBrief = false;
   if (normalizedMode === Mode.TARGET_GENERATION) {
     resetTargetSearch();
     return;
@@ -6125,6 +6265,7 @@ function openRevisionPlayground({ type = 'email', scope = 'single' } = {}) {
 }
 
 function renderResultView(data = {}) {
+  markBriefHasResults();
   if (!resultDiv || !briefDiv || !emailOut) return;
 
   resultDiv.style.display = 'block';
@@ -6741,24 +6882,59 @@ briefBarToggle?.addEventListener('click', () => {
   toggleBriefBarCollapsed();
 });
 
-briefChipCompany?.addEventListener('click', () => showBriefForm());
-briefChipLocation?.addEventListener('click', () => showBriefForm());
-briefChipProduct?.addEventListener('click', () => showBriefForm());
+briefChipCompany?.addEventListener('click', () => {
+  if (briefHasResults()) {
+    openBriefInputsModal({ focusField: 'company' });
+  } else {
+    showBriefForm();
+    focusBriefInput('company');
+  }
+});
+briefChipLocation?.addEventListener('click', () => {
+  if (briefHasResults()) {
+    openBriefInputsModal({ focusField: 'location' });
+  } else {
+    showBriefForm();
+    focusBriefInput('location');
+  }
+});
+briefChipProduct?.addEventListener('click', () => {
+  if (briefHasResults()) {
+    openBriefInputsModal({ focusField: 'product' });
+  } else {
+    showBriefForm();
+    focusBriefInput('product');
+  }
+});
 briefChipDocs?.addEventListener('click', () => {
-  showBriefForm();
-  if (briefDocPickerBtn) {
+  if (briefHasResults()) {
+    openDocPickerModal(Mode.TARGETED_BRIEF);
+  } else if (briefDocPickerBtn) {
     briefDocPickerBtn.click();
   }
 });
 briefChipSections?.addEventListener('click', () => {
-  showBriefForm();
-  openBriefSectionsModal({ mode: 'override' });
+  if (briefHasResults()) {
+    openBriefSectionsModal({
+      mode: 'override',
+      baseModules: activeBriefData?.modules || currentBriefRequest?.modules || getEffectiveBriefModules(),
+    });
+  } else {
+    showBriefForm();
+    openBriefSectionsModal({ mode: 'override' });
+  }
 });
 
 briefRegenerateBtn?.addEventListener('click', async () => {
   if (!currentBriefRequest.company || !currentBriefRequest.product) {
     setBriefStatusMessage('Set company and product before regenerating.', { error: true });
-    toggleBriefEditDrawer();
+    const focusField = !currentBriefRequest.company ? 'company' : 'product';
+    if (briefHasResults()) {
+      openBriefInputsModal({ focusField });
+    } else {
+      showBriefForm();
+      focusBriefInput(focusField);
+    }
     return;
   }
   await runBriefGeneration(currentBriefRequest);

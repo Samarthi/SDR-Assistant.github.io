@@ -208,6 +208,44 @@ test("callGroqWithRetry falls back after 429", async () => {
   assert.strictEqual(resp.text, "recovered");
 });
 
+test("callGroqWithRetry backs off when 429 lacks reset hints", async () => {
+  const originalSetTimeout = global.setTimeout;
+  let waitedMs = null;
+
+  mockFetchSequence([
+    makeResponse({
+      ok: false,
+      status: 429,
+      headers: {
+        "x-ratelimit-limit-tokens": "60000",
+        "x-ratelimit-remaining-tokens": "0",
+      },
+      body: JSON.stringify({ error: { message: "rate limited" } }),
+    }),
+    makeResponse({
+      body: JSON.stringify({ choices: [{ message: { content: "second try" } }] }),
+    }),
+  ]);
+
+  try {
+    global.setTimeout = (fn, ms, ...args) => {
+      waitedMs = ms;
+      return originalSetTimeout(fn, 0, ...args);
+    };
+
+    const resp = await callGroqWithRetry(
+      "retry prompt",
+      { model: "openai/gpt-oss-120b" },
+      { groqKey: "test-key", model: "openai/gpt-oss-120b" }
+    );
+
+    assert.ok(resp.ok);
+    assert.ok(waitedMs >= 60000);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
 test("callGeminiDirect routes through Groq with Groq model", async () => {
   let capturedModel = null;
   mockFetchSequence([

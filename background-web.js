@@ -561,42 +561,54 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
     typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.2) : 4800,
     16000
   );
-  const maxAttempts = Math.max(1, Math.min(opts.maxAttempts || 3, 5));
+  const maxAttempts = Math.max(1, Math.min(opts.maxAttempts || 10, 10));
   let currentModel = primaryModel;
   let attemptIndex = 0;
   let lastError = null;
 
   const computeWaitMs = (rateLimit, status) => {
-    if (!rateLimit) return null;
     const MAX_WAIT_MS = 60000;
 
     let waitMs = null;
-    if (status === 429 && Number.isFinite(rateLimit.retryAfterMs)) {
-      waitMs = rateLimit.retryAfterMs;
-    }
+    if (rateLimit) {
+      if (status === 429 && Number.isFinite(rateLimit.retryAfterMs)) {
+        waitMs = rateLimit.retryAfterMs;
+      }
 
-    if (waitMs === null) {
-      const resets = []
-        .concat(Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
-        .concat(Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
-      if (resets.length) {
-        waitMs = Math.min(...resets);
+      if (waitMs === null) {
+        const resets = []
+          .concat(Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
+          .concat(Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
+        if (resets.length) {
+          waitMs = Math.min(...resets);
+        }
+      }
+
+      if (waitMs === null && status === 429) {
+        const resetHint = Number.isFinite(rateLimit.resetTokensMs)
+          ? rateLimit.resetTokensMs
+          : Number.isFinite(rateLimit.resetRequestsMs)
+            ? rateLimit.resetRequestsMs
+            : null;
+        waitMs = resetHint !== null ? resetHint : MAX_WAIT_MS;
+      }
+
+      if (waitMs === null) {
+        const lowTokens = Number.isFinite(rateLimit.remainingTokens) && rateLimit.remainingTokens <= 1;
+        const lowRequests = Number.isFinite(rateLimit.remainingRequests) && rateLimit.remainingRequests <= 1;
+        const proactiveResets = []
+          .concat(lowTokens && Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
+          .concat(lowRequests && Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
+        if (proactiveResets.length) {
+          waitMs = Math.min(...proactiveResets);
+        }
       }
     }
 
-    if (waitMs === null && status === 429) {
-      waitMs = 300;
-    }
-
-    if (waitMs === null) {
-      const lowTokens = Number.isFinite(rateLimit.remainingTokens) && rateLimit.remainingTokens <= 1;
-      const lowRequests = Number.isFinite(rateLimit.remainingRequests) && rateLimit.remainingRequests <= 1;
-      const proactiveResets = []
-        .concat(lowTokens && Number.isFinite(rateLimit.resetTokensMs) ? [rateLimit.resetTokensMs] : [])
-        .concat(lowRequests && Number.isFinite(rateLimit.resetRequestsMs) ? [rateLimit.resetRequestsMs] : []);
-      if (proactiveResets.length) {
-        waitMs = Math.min(...proactiveResets);
-      }
+    // When rate-limit headers are missing/unreadable (common in browsers without exposed headers),
+    // fall back to a full-minute backoff so 429s like "tokens per minute" can recover.
+    if ((waitMs === null || !Number.isFinite(waitMs)) && status === 429) {
+      waitMs = MAX_WAIT_MS;
     }
 
     if (waitMs === null || !Number.isFinite(waitMs)) return null;

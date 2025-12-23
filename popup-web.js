@@ -82,6 +82,17 @@ const targetProductInput = document.getElementById('targetProduct');
 const targetDocInput = document.getElementById('targetDocInput');
 const targetSectorsInput = document.getElementById('targetSectorsInput');
 const targetSectorsChips = document.getElementById('targetSectorsChips');
+const targetLocationsChips = document.getElementById('targetLocationsChips');
+const targetCommandBar = document.getElementById('targetCommandBar');
+const targetCommandBody = document.getElementById('targetCommandBody');
+const targetBarToggle = document.getElementById('targetBarToggle');
+const targetBarStatus = document.getElementById('targetBarStatus');
+const targetChipProduct = document.getElementById('targetChipProduct');
+const targetChipLocation = document.getElementById('targetChipLocation');
+const targetChipSectors = document.getElementById('targetChipSectors');
+const targetChipDocs = document.getElementById('targetChipDocs');
+const targetRegenerateBtn = document.getElementById('targetRegenerate');
+const targetEditDrawer = document.getElementById('targetEditDrawer');
 const briefFormPane = document.getElementById('formPane');
 const briefCommandBar = document.getElementById('briefCommandBar');
 const briefCommandBody = document.getElementById('briefCommandBody');
@@ -108,6 +119,7 @@ const targetDocPickerBtn = document.getElementById('targetDocPicker');
 const briefDocChips = document.getElementById('briefDocChips');
 const targetDocChips = document.getElementById('targetDocChips');
 const targetedBriefView = document.querySelector('.mode-view[data-mode-view="targetedBrief"]');
+const targetGenerationView = document.querySelector('.mode-view[data-mode-view="targetGeneration"]');
 
 const EXPORT_TEMPLATE_STORAGE_KEY = 'exportTemplate';
 const EXPORT_TEMPLATE_DRAFT_STORAGE_KEY = 'exportTemplateDraft';
@@ -200,11 +212,20 @@ let currentBriefRequest = {
   docs: [],
   modules: [],
 };
+let currentTargetRequest = {
+  product: '',
+  location: [],
+  sectors: [],
+  docs: [],
+};
 let briefVersionCounter = 0;
 let briefVersions = [];
 let briefUiMode = 'form';
 let briefBarCollapsed = false;
 let hasGeneratedBrief = false;
+let targetUiMode = 'form';
+let targetBarCollapsed = false;
+let hasGeneratedTargets = false;
 let historyEntries = [];
 let currentHistoryId = null;
 let targetHistoryEntries = [];
@@ -222,7 +243,9 @@ let activeModalCleanup = null;
 let activeExportState = null;
 let activeMode = null;
 let latestTargetResultsText = '';
+let latestTargetResultsContext = { product: '', location: [], docs: [] };
 let targetSectors = [];
+let targetLocations = [];
 let telephonicPitchErrorMessage = '';
 let telephonicPitchDebugAttempts = [];
 let storedDocs = [];
@@ -714,6 +737,9 @@ function setActiveMode(mode) {
   if (normalizedMode === Mode.TARGETED_BRIEF) {
     setBriefUiMode(briefUiMode || 'form');
   }
+  if (normalizedMode === Mode.TARGET_GENERATION) {
+    setTargetUiMode(targetUiMode || 'form');
+  }
   updateHistorySidebarTitle(normalizedMode);
   updateHistorySearchLabel(normalizedMode);
   if (!modeChanged) {
@@ -842,10 +868,28 @@ async function loadStoredDocs() {
   return storedDocs;
 }
 
+function getActiveTargetStatusEl() {
+  if (targetCommandBar && !targetCommandBar.hidden && targetBarStatus) {
+    return targetBarStatus;
+  }
+  return targetStatusEl;
+}
+
 function setTargetStatus(message, options = {}) {
-  if (!targetStatusEl) return;
-  targetStatusEl.textContent = message || '';
-  targetStatusEl.classList.toggle('error', !!options.error);
+  const target = getActiveTargetStatusEl();
+  const isError = !!options.error;
+  if (target) {
+    target.textContent = message || '';
+    if (target === targetBarStatus) {
+      target.style.color = isError ? '#b91c1c' : '';
+    } else {
+      target.classList.toggle('error', isError);
+    }
+  }
+  if (targetStatusEl && target !== targetStatusEl) {
+    targetStatusEl.textContent = message || '';
+    targetStatusEl.classList.toggle('error', isError);
+  }
 }
 
 function getSelectedDocObjects(mode) {
@@ -925,6 +969,7 @@ function resetTargetResults() {
     targetResultsSection.setAttribute('hidden', 'hidden');
   }
   latestTargetResultsText = '';
+  latestTargetResultsContext = { product: '', location: '', docs: [] };
   if (copyTargetsBtn) {
     copyTargetsBtn.disabled = true;
   }
@@ -1076,6 +1121,11 @@ function normalizeTargetSector(value) {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function normalizeTargetLocation(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
 function renderTargetSectorChips() {
   if (!targetSectorsChips) return;
   targetSectorsChips.innerHTML = '';
@@ -1108,6 +1158,8 @@ function addTargetSector(value) {
   if (exists) return;
   targetSectors.push(normalized);
   renderTargetSectorChips();
+  currentTargetRequest = { ...currentTargetRequest, sectors: [...targetSectors] };
+  updateTargetCommandBarFromRequest(currentTargetRequest);
 }
 
 function removeTargetSector(value) {
@@ -1117,6 +1169,8 @@ function removeTargetSector(value) {
   if (idx === -1) return;
   targetSectors.splice(idx, 1);
   renderTargetSectorChips();
+  currentTargetRequest = { ...currentTargetRequest, sectors: [...targetSectors] };
+  updateTargetCommandBarFromRequest(currentTargetRequest);
 }
 
 function setTargetSectors(values = []) {
@@ -1130,6 +1184,8 @@ function setTargetSectors(values = []) {
 
   targetSectors = next;
   renderTargetSectorChips();
+  currentTargetRequest = { ...currentTargetRequest, sectors: [...targetSectors] };
+  updateTargetCommandBarFromRequest(currentTargetRequest);
 }
 
 function commitTargetSectorInput() {
@@ -1141,7 +1197,79 @@ function commitTargetSectorInput() {
   targetSectorsInput.value = '';
 }
 
+function renderTargetLocationChips() {
+  if (!targetLocationsChips) return;
+  targetLocationsChips.innerHTML = '';
+
+  targetLocations.forEach((location) => {
+    const chip = document.createElement('span');
+    chip.className = 'sector-chip';
+
+    const label = document.createElement('span');
+    label.textContent = location;
+    chip.appendChild(label);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'sector-chip-remove';
+    removeBtn.dataset.action = 'remove-location';
+    removeBtn.dataset.value = location;
+    removeBtn.setAttribute('aria-label', `Remove ${location}`);
+    removeBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+    chip.appendChild(removeBtn);
+
+    targetLocationsChips.appendChild(chip);
+  });
+}
+
+function addTargetLocation(value) {
+  const normalized = normalizeTargetLocation(value);
+  if (!normalized) return;
+  const exists = targetLocations.some((loc) => loc.toLowerCase() === normalized.toLowerCase());
+  if (exists) return;
+  targetLocations.push(normalized);
+  currentTargetRequest = { ...currentTargetRequest, location: [...targetLocations] };
+  renderTargetLocationChips();
+  updateTargetCommandBarFromRequest(currentTargetRequest);
+}
+
+function removeTargetLocation(value) {
+  const normalized = normalizeTargetLocation(value);
+  if (!normalized) return;
+  const idx = targetLocations.findIndex((loc) => loc.toLowerCase() === normalized.toLowerCase());
+  if (idx === -1) return;
+  targetLocations.splice(idx, 1);
+  currentTargetRequest = { ...currentTargetRequest, location: [...targetLocations] };
+  renderTargetLocationChips();
+  updateTargetCommandBarFromRequest(currentTargetRequest);
+}
+
+function setTargetLocations(values = []) {
+  const next = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const normalized = normalizeTargetLocation(value);
+    if (!normalized) return;
+    if (next.some((loc) => loc.toLowerCase() === normalized.toLowerCase())) return;
+    next.push(normalized);
+  });
+
+  targetLocations = next;
+  currentTargetRequest = { ...currentTargetRequest, location: [...targetLocations] };
+  renderTargetLocationChips();
+  updateTargetCommandBarFromRequest(currentTargetRequest);
+}
+
+function commitTargetLocationInput() {
+  if (!targetLocationInput) return;
+  const pending = normalizeTargetLocation(targetLocationInput.value);
+  if (pending) {
+    addTargetLocation(pending);
+  }
+  targetLocationInput.value = '';
+}
+
 setTargetSectors([]);
+setTargetLocations([]);
 loadStoredDocs().finally(() => {
   renderDocChips(Mode.TARGETED_BRIEF);
   renderDocChips(Mode.TARGET_GENERATION);
@@ -1171,6 +1299,17 @@ function setBriefEditDrawerCollapsed(collapsed) {
   }
 }
 
+function setTargetEditDrawerCollapsed(collapsed) {
+  if (!targetEditDrawer) return;
+  if (collapsed) {
+    targetEditDrawer.setAttribute('data-collapsed', 'true');
+    targetEditDrawer.hidden = true;
+  } else {
+    targetEditDrawer.removeAttribute('data-collapsed');
+    targetEditDrawer.hidden = false;
+  }
+}
+
 function briefHasResults() {
   return hasGeneratedBrief || briefVersionCounter > 0 || (Array.isArray(briefVersions) && briefVersions.length > 0);
 }
@@ -1179,11 +1318,31 @@ function markBriefHasResults() {
   hasGeneratedBrief = true;
 }
 
+function targetHasResults() {
+  return hasGeneratedTargets;
+}
+
+function markTargetHasResults() {
+  hasGeneratedTargets = true;
+}
+
 function focusBriefInput(field) {
   const map = {
     company: companyEl,
     location: locationEl,
     product: productEl,
+  };
+  const target = map[field] || null;
+  if (target && typeof target.focus === 'function') {
+    target.focus();
+  }
+}
+
+function focusTargetInput(field) {
+  const map = {
+    product: targetProductInput,
+    location: targetLocationInput,
+    sectors: targetSectorsInput,
   };
   const target = map[field] || null;
   if (target && typeof target.focus === 'function') {
@@ -1230,6 +1389,30 @@ function updateBriefVersionSelect() {
   briefVersionSelect.innerHTML = options.join('');
 }
 
+function normalizeStringList(values, normalizer) {
+  const fn = typeof normalizer === 'function' ? normalizer : (val) => (typeof val === 'string' ? val.trim() : '');
+  const list = Array.isArray(values)
+    ? values
+    : typeof values === 'string'
+      ? values.split(',')
+      : [];
+  const result = [];
+  list.forEach((value) => {
+    const normalized = fn(value);
+    if (!normalized) return;
+    if (result.some((item) => item.toLowerCase() === normalized.toLowerCase())) return;
+    result.push(normalized);
+  });
+  return result;
+}
+
+function formatMultiValueLabel(values, { fallback = 'Not set', normalizer } = {}) {
+  const list = normalizeStringList(values, normalizer);
+  if (!list.length) return fallback;
+  if (list.length === 1) return list[0];
+  return `${list[0]} +${list.length - 1}`;
+}
+
 function updateBriefCommandBarFromRequest(request = currentBriefRequest) {
   if (!briefCommandBar) return;
   const req = request || {};
@@ -1244,6 +1427,21 @@ function updateBriefCommandBarFromRequest(request = currentBriefRequest) {
   assignValue(briefChipProduct?.querySelector('.chip-value'), req.product);
   assignValue(briefChipDocs?.querySelector('.chip-value'), String(docCount));
   assignValue(briefChipSections?.querySelector('.chip-value'), moduleLabel);
+}
+
+function updateTargetCommandBarFromRequest(request = currentTargetRequest) {
+  if (!targetCommandBar) return;
+  const req = request || {};
+  const docCount = Array.isArray(req.docs) ? req.docs.length : 0;
+  const sectorsLabel = formatMultiValueLabel(req.sectors, { normalizer: normalizeTargetSector });
+  const locationLabel = formatMultiValueLabel(req.location, { normalizer: normalizeTargetLocation });
+  const assignValue = (el, val) => {
+    if (el) el.textContent = val || 'Not set';
+  };
+  assignValue(targetChipProduct?.querySelector('.chip-value'), req.product);
+  assignValue(targetChipLocation?.querySelector('.chip-value'), locationLabel);
+  assignValue(targetChipSectors?.querySelector('.chip-value'), sectorsLabel);
+  assignValue(targetChipDocs?.querySelector('.chip-value'), String(docCount));
 }
 
 function setBriefBarCollapsed(collapsed) {
@@ -1306,6 +1504,64 @@ function toggleBriefEditDrawer() {
   }
 }
 
+function setTargetBarCollapsed(collapsed) {
+  targetBarCollapsed = !!collapsed;
+  if (targetCommandBar) {
+    targetCommandBar.classList.toggle('is-collapsed', targetBarCollapsed);
+  }
+  if (targetCommandBody) {
+    targetCommandBody.hidden = targetBarCollapsed;
+  }
+  if (targetBarToggle) {
+    const label = targetBarCollapsed ? 'Expand input bar' : 'Collapse input bar';
+    targetBarToggle.setAttribute('aria-expanded', targetBarCollapsed ? 'false' : 'true');
+    targetBarToggle.setAttribute('aria-label', label);
+    targetBarToggle.title = label;
+  }
+}
+
+function toggleTargetBarCollapsed() {
+  setTargetBarCollapsed(!targetBarCollapsed);
+}
+
+function showTargetCommandBar(show) {
+  if (!targetCommandBar) return;
+  targetCommandBar.hidden = !show;
+  setTargetBarCollapsed(targetBarCollapsed);
+  if (show) {
+    setTargetEditDrawerCollapsed(true);
+  }
+}
+
+function setTargetUiMode(mode) {
+  targetUiMode = mode === 'bar' ? 'bar' : 'form';
+  const isBar = targetUiMode === 'bar';
+  if (targetGenerationView) {
+    targetGenerationView.classList.toggle('target-ui-bar', isBar);
+    targetGenerationView.classList.toggle('target-ui-form', !isBar);
+  }
+  if (targetCommandBar) targetCommandBar.hidden = !isBar;
+  setTargetBarCollapsed(targetBarCollapsed);
+  setTargetEditDrawerCollapsed(isBar);
+}
+
+function showTargetForm() {
+  setTargetUiMode('form');
+}
+
+function showTargetBar() {
+  setTargetUiMode('bar');
+}
+
+function toggleTargetEditDrawer() {
+  const formVisible = targetEditDrawer && !targetEditDrawer.hidden;
+  if (formVisible) {
+    showTargetBar();
+  } else {
+    showTargetForm();
+  }
+}
+
 function buildBriefRequestFromForm() {
   return {
     company: companyEl?.value?.trim() || '',
@@ -1313,6 +1569,16 @@ function buildBriefRequestFromForm() {
     product: productEl?.value?.trim() || '',
     docs: getSelectedDocObjects(Mode.TARGETED_BRIEF),
     modules: getEffectiveBriefModules(),
+  };
+}
+
+function buildTargetRequestFromForm() {
+  commitTargetLocationInput();
+  return {
+    product: targetProductInput?.value?.trim() || '',
+    location: [...targetLocations],
+    sectors: [...targetSectors],
+    docs: getSelectedDocObjects(Mode.TARGET_GENERATION),
   };
 }
 
@@ -1429,6 +1695,114 @@ function openBriefInputsModal({ focusField } = {}) {
   });
 }
 
+function openTargetInputsModal({ focusField } = {}) {
+  const mergedRequest = { ...buildTargetRequestFromForm(), ...(currentTargetRequest || {}) };
+  mergedRequest.sectors = Array.isArray(mergedRequest.sectors) ? mergedRequest.sectors.filter(Boolean) : [];
+  mergedRequest.docs = getSelectedDocObjects(Mode.TARGET_GENERATION);
+
+  openModal({
+    title: 'Edit target inputs',
+    render: ({ body, footer, close }) => {
+      if (!body || !footer) return;
+
+      body.innerHTML = '';
+      footer.innerHTML = '';
+
+      const helper = document.createElement('div');
+      helper.className = 'modal-helper';
+      helper.textContent = 'Update the target inputs without leaving the results view.';
+      body.appendChild(helper);
+
+      const section = document.createElement('div');
+      section.className = 'modal-section';
+      body.appendChild(section);
+
+      const buildField = (labelText, value, placeholder) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'input-card';
+        const label = document.createElement('label');
+        label.textContent = labelText;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = value || '';
+        if (placeholder) input.placeholder = placeholder;
+        wrapper.appendChild(label);
+        wrapper.appendChild(input);
+        section.appendChild(wrapper);
+        return input;
+      };
+
+      const productInput = buildField('Product', mergedRequest.product, 'e.g., Cloud Security Platform');
+      const locationInput = buildField('Locations', Array.isArray(mergedRequest.location) ? mergedRequest.location.join(', ') : mergedRequest.location, 'e.g., Singapore, Dubai');
+      const sectorsInput = buildField('Sectors', mergedRequest.sectors.join(', '), 'e.g., FinTech, Healthcare');
+
+      const quickActions = document.createElement('div');
+      quickActions.className = 'actions';
+      const docBtn = document.createElement('button');
+      docBtn.type = 'button';
+      docBtn.className = 'ghost';
+      docBtn.textContent = 'Manage documents';
+      docBtn.addEventListener('click', () => {
+        close();
+        openDocPickerModal(Mode.TARGET_GENERATION);
+      });
+      quickActions.appendChild(docBtn);
+      section.appendChild(quickActions);
+
+      const applyInputs = () => {
+        const rawSectors = sectorsInput.value.split(',')
+          .map((value) => normalizeTargetSector(value))
+          .filter(Boolean);
+        setTargetSectors(rawSectors);
+        const rawLocations = locationInput.value.split(',')
+          .map((value) => normalizeTargetLocation(value))
+          .filter(Boolean);
+        setTargetLocations(rawLocations);
+        const next = {
+          product: productInput.value.trim(),
+          location: [...targetLocations],
+          sectors: [...targetSectors],
+          docs: getSelectedDocObjects(Mode.TARGET_GENERATION),
+        };
+        if (targetProductInput) targetProductInput.value = next.product;
+        if (targetLocationInput) targetLocationInput.value = '';
+        if (targetSectorsInput) targetSectorsInput.value = '';
+        currentTargetRequest = { ...currentTargetRequest, ...next };
+        updateTargetCommandBarFromRequest(currentTargetRequest);
+        showTargetBar();
+      };
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'ghost';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => close());
+
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'primary';
+      saveBtn.textContent = 'Save inputs';
+      saveBtn.addEventListener('click', () => {
+        applyInputs();
+        close();
+      });
+
+      footer.appendChild(cancelBtn);
+      footer.appendChild(saveBtn);
+
+      const focusMap = {
+        product: productInput,
+        location: locationInput,
+        sectors: sectorsInput,
+      };
+      const target = focusMap[focusField] || productInput;
+      window.setTimeout(() => {
+        target?.focus?.();
+      }, 50);
+    },
+  });
+}
+
 async function runBriefGeneration(request) {
   const req = request || {};
   const company = (req.company || '').trim();
@@ -1523,6 +1897,89 @@ async function runBriefGeneration(request) {
   } catch (err) {
     resetBriefProgress();
     setBriefStatusMessage('Error: ' + (err?.message || err), { error: true });
+  }
+}
+
+async function runTargetGeneration(request) {
+  const req = request || {};
+  const product = (req.product || '').trim();
+  const locations = normalizeStringList(req.location, normalizeTargetLocation);
+  const sectors = normalizeStringList(req.sectors, normalizeTargetSector);
+
+  if (!product) {
+    setTargetStatus('Product name is required to generate targets.', { error: true });
+    if (targetHasResults()) {
+      openTargetInputsModal({ focusField: 'product' });
+    } else {
+      showTargetForm();
+      focusTargetInput('product');
+    }
+    return;
+  }
+
+  showTargetBar();
+  currentTargetRequest = { ...req, product, location: locations, sectors };
+  updateTargetCommandBarFromRequest();
+
+  setTargetStatus('Generating targets...', { error: false });
+  resetTargetResults();
+
+  const submitBtn = targetForm?.querySelector('#generateTargets');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+  }
+
+  let docPayload = { name: '', text: '', base64: '' };
+  const file = targetDocInput?.files?.[0] || null;
+  if (file) {
+    docPayload = await readFileContentForTargets(file);
+  }
+
+  try {
+    await loadStoredDocs();
+    const docs = Array.isArray(req.docs) && req.docs.length ? req.docs : getSelectedDocObjects(Mode.TARGET_GENERATION);
+    currentTargetRequest = { ...currentTargetRequest, docs };
+    updateTargetCommandBarFromRequest();
+    setLatestTargetResultsContext({ product, location: locations, docs: buildDocRefsFromDocs(docs) });
+
+    const resp = await sendMessagePromise({
+      action: 'generateTargets',
+      product,
+      location: locations,
+      sectors,
+      docs,
+      docName: docPayload.name,
+      docText: docPayload.text,
+      docBase64: docPayload.base64,
+    });
+
+    if (!resp) {
+      setTargetStatus('No response received from background script.', { error: true });
+      return;
+    }
+
+    if (resp.error) {
+      setTargetStatus(`Error: ${resp.error}`, { error: true });
+      return;
+    }
+
+    const companies = Array.isArray(resp.companies) ? resp.companies : [];
+    renderTargetResults(companies);
+    if (resp && resp.ok) {
+      loadTargetHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
+    }
+
+    if (companies.length) {
+      setTargetStatus(`Found ${companies.length} potential companies.`, { error: false });
+    } else {
+      setTargetStatus('No companies returned. Try refining the inputs.', { error: true });
+    }
+  } catch (err) {
+    setTargetStatus(`Failed to generate targets: ${err?.message || err}`, { error: true });
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+    }
   }
 }
 
@@ -1965,12 +2422,89 @@ function buildTargetsCopyText(companies = []) {
     .join('\n');
 }
 
+function buildDocRefsFromDocs(docs = []) {
+  return (Array.isArray(docs) ? docs : [])
+    .map((doc) => {
+      if (!doc) return null;
+      const id = doc.id ? String(doc.id) : '';
+      const name = doc.name ? String(doc.name) : '';
+      if (!id && !name) return null;
+      return { id, name };
+    })
+    .filter(Boolean);
+}
+
+function setLatestTargetResultsContext({ product = '', location = [], docs = [] } = {}) {
+  const normalizedLocations = normalizeStringList(location, normalizeTargetLocation);
+  latestTargetResultsContext = {
+    product: typeof product === 'string' ? product : '',
+    location: normalizedLocations,
+    docs: Array.isArray(docs) ? docs.filter(Boolean) : [],
+  };
+}
+
+function normalizeMatchValue(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function findMatchingBriefHistoryEntry({ company = '', product = '' } = {}) {
+  if (!historyEntries.length) return null;
+  const normalizedCompany = normalizeMatchValue(company);
+  if (!normalizedCompany) return null;
+  const normalizedProduct = normalizeMatchValue(product);
+
+  const matchesCompany = (entry) => normalizeMatchValue(entry?.request?.company) === normalizedCompany;
+
+  if (normalizedProduct) {
+    const strict = historyEntries.find((entry) => {
+      if (!matchesCompany(entry)) return false;
+      return normalizeMatchValue(entry?.request?.product) === normalizedProduct;
+    });
+    if (strict) return strict;
+  }
+
+  return historyEntries.find(matchesCompany) || null;
+}
+
+async function openBriefFromTarget({ company = '', product = '', location = [], docs = [] } = {}) {
+  const normalizedCompany = normalizeMatchValue(company);
+  if (!normalizedCompany) {
+    setTargetStatus('Select a company to open a brief.', { error: true });
+    return;
+  }
+
+  const resolvedLocation = Array.isArray(location)
+    ? location.filter(Boolean).join(', ')
+    : typeof location === 'string'
+      ? location
+      : '';
+
+  focusMode(Mode.TARGETED_BRIEF, briefFormPane);
+
+  const matchedEntry = findMatchingBriefHistoryEntry({ company, product });
+  if (matchedEntry) {
+    setActiveHistoryItem(matchedEntry.id);
+    showHistoryEntry(matchedEntry, { updateForm: true });
+    return;
+  }
+
+  if (companyEl) companyEl.value = company;
+  if (locationEl) locationEl.value = resolvedLocation;
+  if (productEl) productEl.value = product;
+
+  await loadStoredDocs();
+  setSelectedDocsFromRefs(Mode.TARGETED_BRIEF, docs);
+
+  await runBriefGeneration({ company, location: resolvedLocation, product });
+}
+
 function renderTargetResults(companies = []) {
   if (!targetResultsSection || !targetResultsList) {
     latestTargetResultsText = '';
     return;
   }
 
+  markTargetHasResults();
   targetResultsList.innerHTML = '';
 
   if (!companies.length) {
@@ -2029,6 +2563,23 @@ function renderTargetResults(companies = []) {
       notes.textContent = company.notes;
       item.appendChild(notes);
     }
+
+    const actions = document.createElement('div');
+    actions.className = 'target-company-actions';
+
+    const briefBtn = document.createElement('button');
+    briefBtn.type = 'button';
+    briefBtn.className = 'ghost target-company-action';
+    briefBtn.dataset.targetAction = 'open-brief';
+    briefBtn.dataset.company = company?.name ? String(company.name).trim() : '';
+    briefBtn.textContent = 'Open brief';
+    if (!briefBtn.dataset.company) {
+      briefBtn.disabled = true;
+    } else {
+      briefBtn.setAttribute('aria-label', `Open brief for ${briefBtn.dataset.company}`);
+    }
+    actions.appendChild(briefBtn);
+    item.appendChild(actions);
 
     targetResultsList.appendChild(item);
   });
@@ -2249,72 +2800,8 @@ viewDocs?.addEventListener('click', async () => {
 
 targetForm?.addEventListener('submit', async (evt) => {
   evt.preventDefault();
-  const product = targetProductInput?.value.trim() || '';
-  const location = targetLocationInput?.value.trim() || '';
-  const sectors = [...targetSectors];
-
-  if (!product) {
-    setTargetStatus('Product name is required to generate targets.', { error: true });
-    return;
-  }
-
-  setTargetStatus('Generating targets...', { error: false });
-  resetTargetResults();
-
-  const submitBtn = targetForm.querySelector('#generateTargets');
-  if (submitBtn) {
-    submitBtn.disabled = true;
-  }
-
-  let docPayload = { name: '', text: '', base64: '' };
-  const file = targetDocInput?.files?.[0] || null;
-  if (file) {
-    docPayload = await readFileContentForTargets(file);
-  }
-
-  try {
-    await loadStoredDocs();
-    const docs = getSelectedDocObjects(Mode.TARGET_GENERATION);
-
-    const resp = await sendMessagePromise({
-      action: 'generateTargets',
-      product,
-      location,
-      sectors,
-      docs,
-      docName: docPayload.name,
-      docText: docPayload.text,
-      docBase64: docPayload.base64,
-    });
-
-    if (!resp) {
-      setTargetStatus('No response received from background script.', { error: true });
-      return;
-    }
-
-    if (resp.error) {
-      setTargetStatus(`Error: ${resp.error}`, { error: true });
-      return;
-    }
-
-    const companies = Array.isArray(resp.companies) ? resp.companies : [];
-    renderTargetResults(companies);
-    if (resp && resp.ok) {
-      loadTargetHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
-    }
-
-    if (companies.length) {
-      setTargetStatus(`Found ${companies.length} potential companies.`, { error: false });
-    } else {
-      setTargetStatus('No companies returned. Try refining the inputs.', { error: true });
-    }
-  } catch (err) {
-    setTargetStatus(`Failed to generate targets: ${err?.message || err}`, { error: true });
-  } finally {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-    }
-  }
+  const request = buildTargetRequestFromForm();
+  await runTargetGeneration(request);
 });
 
 targetSectorsInput?.addEventListener('input', (evt) => {
@@ -2342,6 +2829,33 @@ targetSectorsChips?.addEventListener('click', (evt) => {
   if (!button) return;
   removeTargetSector(button.dataset.value || '');
   targetSectorsInput?.focus();
+});
+
+targetLocationInput?.addEventListener('input', (evt) => {
+  const value = evt.target.value;
+  if (!value.includes(',')) return;
+  const parts = value.split(',');
+  const remainder = parts.pop();
+  parts.forEach((part) => addTargetLocation(part));
+  evt.target.value = remainder ? remainder.trimStart() : '';
+});
+
+targetLocationInput?.addEventListener('keydown', (evt) => {
+  if (evt.key === 'Enter') {
+    evt.preventDefault();
+    commitTargetLocationInput();
+  }
+});
+
+targetLocationInput?.addEventListener('blur', () => {
+  commitTargetLocationInput();
+});
+
+targetLocationsChips?.addEventListener('click', (evt) => {
+  const button = evt.target.closest('[data-action="remove-location"]');
+  if (!button) return;
+  removeTargetLocation(button.dataset.value || '');
+  targetLocationInput?.focus();
 });
 
 copyTargetsBtn?.addEventListener('click', async () => {
@@ -2374,6 +2888,18 @@ copyTargetsBtn?.addEventListener('click', async () => {
       setTargetStatus('Unable to copy results automatically.', { error: true });
     }
   }
+});
+
+targetResultsList?.addEventListener('click', (evt) => {
+  const actionBtn = evt.target.closest('[data-target-action="open-brief"]');
+  if (!actionBtn) return;
+  evt.preventDefault();
+  openBriefFromTarget({
+    company: actionBtn.dataset.company || '',
+    product: latestTargetResultsContext.product,
+    location: latestTargetResultsContext.location,
+    docs: latestTargetResultsContext.docs,
+  });
 });
 
 function startNewResearch(mode = activeMode || Mode.TARGETED_BRIEF) {
@@ -2450,7 +2976,13 @@ function resetTargetSearch() {
   if (targetDocInput) targetDocInput.value = '';
   if (targetSectorsInput) targetSectorsInput.value = '';
   setTargetSectors([]);
+  setTargetLocations([]);
   clearSelectedDocs(Mode.TARGET_GENERATION);
+
+  currentTargetRequest = { product: '', location: '', sectors: [], docs: [] };
+  hasGeneratedTargets = false;
+  targetUiMode = 'form';
+  showTargetForm();
 
   currentTargetHistoryId = null;
   setActiveTargetHistoryItem('');
@@ -4019,7 +4551,6 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
   };
 
   const groqKeyField = buildKeyField('Groq API key', (cachedGroqKey || '').trim());
-  groqKeyField.input.style.padding = '12px 14px';
 
   const groqKeyLabel = document.createElement('p');
   groqKeyLabel.className = 'modal-helper';
@@ -6862,7 +7393,8 @@ function renderTargetHistory(entries, opts = {}) {
     content.appendChild(title);
 
     const subtitleParts = [];
-    if (entry?.request?.location) subtitleParts.push(entry.request.location);
+    const locationLabel = formatMultiValueLabel(entry?.request?.location, { normalizer: normalizeTargetLocation, fallback: '' });
+    if (locationLabel) subtitleParts.push(locationLabel);
     if (Array.isArray(entry?.result?.companies)) {
       subtitleParts.push(`${entry.result.companies.length} companies`);
     }
@@ -6901,12 +7433,30 @@ function showTargetHistoryEntry(entry, options = {}) {
 
   if (opts.updateForm) {
     if (targetProductInput) targetProductInput.value = entry?.request?.product || '';
-    if (targetLocationInput) targetLocationInput.value = entry?.request?.location || '';
+    if (targetLocationInput) targetLocationInput.value = '';
     if (targetDocInput) targetDocInput.value = '';
     if (targetSectorsInput) targetSectorsInput.value = '';
     setTargetSectors(entry?.request?.sectors || []);
+    const normalizedLocations = normalizeStringList(entry?.request?.location, normalizeTargetLocation);
+    setTargetLocations(normalizedLocations);
   }
   setSelectedDocsFromRefs(Mode.TARGET_GENERATION, entry?.request?.docs || []);
+  setLatestTargetResultsContext({
+    product: entry?.request?.product || '',
+    location: normalizeStringList(entry?.request?.location, normalizeTargetLocation),
+    docs: Array.isArray(entry?.request?.docs) ? entry.request.docs : [],
+  });
+
+  if (entry.result) {
+    currentTargetRequest = {
+      product: entry?.request?.product || '',
+      location: normalizeStringList(entry?.request?.location, normalizeTargetLocation),
+      sectors: Array.isArray(entry?.request?.sectors) ? entry.request.sectors : [],
+      docs: entry?.request?.docs || [],
+    };
+    updateTargetCommandBarFromRequest(currentTargetRequest);
+    showTargetBar();
+  }
 
   const companies = Array.isArray(entry?.result?.companies) ? entry.result.companies : [];
   renderTargetResults(companies);
@@ -7127,6 +7677,56 @@ briefRegenerateBtn?.addEventListener('click', async () => {
     return;
   }
   await runBriefGeneration(currentBriefRequest);
+});
+
+targetBarToggle?.addEventListener('click', () => {
+  toggleTargetBarCollapsed();
+});
+
+targetChipProduct?.addEventListener('click', () => {
+  if (targetHasResults()) {
+    openTargetInputsModal({ focusField: 'product' });
+  } else {
+    showTargetForm();
+    focusTargetInput('product');
+  }
+});
+targetChipLocation?.addEventListener('click', () => {
+  if (targetHasResults()) {
+    openTargetInputsModal({ focusField: 'location' });
+  } else {
+    showTargetForm();
+    focusTargetInput('location');
+  }
+});
+targetChipSectors?.addEventListener('click', () => {
+  if (targetHasResults()) {
+    openTargetInputsModal({ focusField: 'sectors' });
+  } else {
+    showTargetForm();
+    focusTargetInput('sectors');
+  }
+});
+targetChipDocs?.addEventListener('click', () => {
+  if (targetHasResults()) {
+    openDocPickerModal(Mode.TARGET_GENERATION);
+  } else if (targetDocPickerBtn) {
+    targetDocPickerBtn.click();
+  }
+});
+
+targetRegenerateBtn?.addEventListener('click', async () => {
+  if (!currentTargetRequest.product) {
+    setTargetStatus('Set product before regenerating.', { error: true });
+    if (targetHasResults()) {
+      openTargetInputsModal({ focusField: 'product' });
+    } else {
+      showTargetForm();
+      focusTargetInput('product');
+    }
+    return;
+  }
+  await runTargetGeneration(currentTargetRequest);
 });
 
 briefVersionSelect?.addEventListener('change', (evt) => {

@@ -31,6 +31,7 @@ const DEFAULT_LLM_MODELS = {
 const GROQ_LEGACY_MODEL = "gpt-oss-20b";
 const GROQ_SECONDARY_MODEL = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
 const LLAMA_33_MODEL = "llama-3.3-70b-versatile";
+const PERSONA_EMAIL_MODEL = "qwen/qwen3-32b";
 const EXPORT_TRANSFORM_TOOL_NAME = "run_js";
 const EXPORT_TRANSFORM_MODEL = LLAMA_33_MODEL;
 const EXPORT_SCHEMA_SAMPLE_LIMIT = 50;
@@ -437,6 +438,7 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
     ? (userCfg.stopSequences || userCfg.stop).filter((s) => typeof s === "string" && s.length)
     : null;
   const reasoningEffort = userCfg.reasoningEffort || opts.reasoningEffort;
+  const reasoning = userCfg.reasoning || opts.reasoning;
   const stream = opts.stream === true || userCfg.stream === true ? true : false;
   const isCompoundModel = modelName === GROQ_COMPOUND_MODEL || modelName === GROQ_COMPOUND_MINI_MODEL;
 
@@ -484,6 +486,9 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
   }
   if (reasoningEffort) {
     body.reasoning_effort = reasoningEffort;
+  }
+  if (typeof reasoning === "string" && reasoning.trim()) {
+    body.reasoning = reasoning.trim();
   }
 
   try {
@@ -1648,7 +1653,14 @@ function normalizeTargetCompanies(rawList = []) {
 
 async function generateTargets({ product, location, sectors, docs, docName, docText, docBase64 }) {
   const trimmedProduct = typeof product === "string" ? product.trim() : "";
-  const trimmedLocation = typeof location === "string" ? location.trim() : "";
+  const normalizedLocations = Array.isArray(location)
+    ? location
+        .map((loc) => (typeof loc === "string" ? loc.trim() : ""))
+        .filter((loc) => !!loc)
+    : typeof location === "string" && location.trim()
+      ? [location.trim()]
+      : [];
+  const trimmedLocation = normalizedLocations.join(", ");
   const normalizedSectors = Array.isArray(sectors)
     ? sectors
         .map((sector) => (typeof sector === "string" ? sector.trim() : ""))
@@ -2897,10 +2909,11 @@ async function generatePersonaEmails({ personas, company, location, product, doc
     }
 
     const resp = await callLlmWithRetry(prompt, {
-      model: LLAMA_33_MODEL,
-      secondaryModel: LLAMA_33_MODEL,
+      model: PERSONA_EMAIL_MODEL,
+      secondaryModel: PERSONA_EMAIL_MODEL,
+      reasoning: "off",
       generationConfig: {
-        temperature: 0.2,
+        temperature: 0.4,
         maxOutputTokens: 12000,
       },
     });
@@ -3046,10 +3059,11 @@ async function revisePersonaEmail({ persona, email, company, product, location, 
     });
 
     const resp = await callLlmWithRetry(prompt, {
-      model: LLAMA_33_MODEL,
-      secondaryModel: LLAMA_33_MODEL,
+      model: PERSONA_EMAIL_MODEL,
+      secondaryModel: PERSONA_EMAIL_MODEL,
+      reasoning: "off",
       generationConfig: {
-        temperature: 0.2,
+        temperature: 0.4,
         maxOutputTokens: 12000,
       },
     });

@@ -301,36 +301,95 @@
           <div class="mode-view" data-mode-view="targetGeneration" hidden>
             <div class="target-section">
               <p class="section-desc">Provide product context to research target companies in a specific location.</p>
-              <form id="targetForm" class="target-form">
-                <div class="input-card">
-                  <label for="targetProduct">Product Name</label>
-                  <p class="input-desc">What are you taking to market? Name the product so targeting stays on-message.</p>
-                  <input id="targetProduct" name="targetProduct" type="text" placeholder="e.g., Cloud Security Platform" autocomplete="off" />
+              <div id="targetCommandBar" class="brief-command-bar" hidden aria-label="Target input bar">
+                <div class="brief-command-header">
+                  <div class="brief-command-label">Inputs</div>
+                  <button
+                    id="targetBarToggle"
+                    class="brief-command-toggle"
+                    type="button"
+                    aria-label="Collapse input bar"
+                    aria-expanded="true"
+                    aria-controls="targetCommandBody"
+                    title="Collapse input bar"
+                  >
+                    <span class="sr-only">Toggle input bar</span>
+                    <span class="bar-icon" aria-hidden="true" data-feather="chevron-up"></span>
+                  </button>
                 </div>
-                <div class="input-card">
-                  <label>Product Document Upload</label>
-                  <p class="input-desc">Attach collateral to help the assistant pick the right companies.</p>
-                  <div class="doc-selector">
-                    <button id="targetDocPicker" type="button" class="ghost">Add documents</button>
-                    <div id="targetDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for targets"></div>
+                <div id="targetCommandBody" class="brief-command-body">
+                  <div class="brief-command-row brief-command-inline">
+                    <button id="targetRegenerate" type="button" class="bar-icon-btn brief-bar-regenerate">
+                      <span class="bar-icon" aria-hidden="true" data-feather="rotate-cw"></span>
+                      <span class="bar-icon-label">Regenerate</span>
+                    </button>
+                    <div class="brief-chip-row brief-chip-row-inline" role="list">
+                      <button id="targetChipProduct" class="brief-chip brief-chip-editable brief-chip-fixed" type="button" role="listitem">
+                        <span class="chip-label">Product</span>
+                        <span class="chip-value" data-target-chip-product>Not set</span>
+                        <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                        <span class="sr-only">Edit product</span>
+                      </button>
+                      <button id="targetChipLocation" class="brief-chip brief-chip-editable brief-chip-fixed" type="button" role="listitem">
+                        <span class="chip-label">Location</span>
+                        <span class="chip-value" data-target-chip-location>Not set</span>
+                        <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                        <span class="sr-only">Edit location</span>
+                      </button>
+                      <button id="targetChipSectors" class="brief-chip brief-chip-compact brief-chip-editable brief-chip-fixed" type="button" role="listitem">
+                        <span class="chip-label">Sectors</span>
+                        <span class="chip-value" data-target-chip-sectors>Not set</span>
+                        <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                        <span class="sr-only">Edit sectors</span>
+                      </button>
+                      <button id="targetChipDocs" class="brief-chip brief-chip-compact brief-chip-editable brief-chip-fixed" type="button" role="listitem">
+                        <span class="chip-label">Docs</span>
+                        <span class="chip-value" data-target-chip-docs>0</span>
+                        <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                        <span class="sr-only">Edit docs</span>
+                      </button>
+                    </div>
+                    <div class="brief-command-spacer" aria-hidden="true"></div>
+                    <div id="targetBarStatus" class="brief-bar-status" role="status" aria-live="polite"></div>
                   </div>
                 </div>
-                <div class="input-card">
-                  <label for="targetSectorsInput">Target Sectors of the Product</label>
-                  <p class="input-desc">Industries or verticals you want to prioritize.</p>
+              </div>
+              <div id="targetEditDrawer" class="brief-edit-drawer">
+                <form id="targetForm" class="target-form">
+                  <div class="input-card">
+                    <label for="targetProduct">Product Name</label>
+                    <p class="input-desc">What are you taking to market? Name the product so targeting stays on-message.</p>
+                    <input id="targetProduct" name="targetProduct" type="text" placeholder="e.g., Cloud Security Platform" autocomplete="off" />
+                  </div>
+                  <div class="input-card">
+                    <label>Product Document Upload</label>
+                    <p class="input-desc">Attach collateral to help the assistant pick the right companies.</p>
+                    <div class="doc-selector">
+                      <button id="targetDocPicker" type="button" class="ghost">Add documents</button>
+                      <div id="targetDocChips" class="doc-chip-list" aria-live="polite" aria-label="Selected documents for targets"></div>
+                    </div>
+                  </div>
+                  <div class="input-card">
+                    <label for="targetSectorsInput">Target Sectors of the Product</label>
+                    <p class="input-desc">Industries or verticals you want to prioritize.</p>
+                    <div class="target-sectors-field">
+                      <div id="targetSectorsChips" class="target-sectors-chips" aria-live="polite" aria-label="Selected target sectors"></div>
+                      <input id="targetSectorsInput" name="targetSectorsInput" type="text" placeholder="e.g., FinTech, Healthcare" autocomplete="off" />
+                      <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with -.</p>
+                    </div>
+                  </div>
+                  <div class="input-card">
+                  <label for="targetLocation">Locations</label>
+                  <p class="input-desc">Where should we hunt for new logos? Add cities or regions.</p>
                   <div class="target-sectors-field">
-                    <div id="targetSectorsChips" class="target-sectors-chips" aria-live="polite" aria-label="Selected target sectors"></div>
-                    <input id="targetSectorsInput" name="targetSectorsInput" type="text" placeholder="e.g., FinTech, Healthcare" autocomplete="off" />
-                    <p class="target-sectors-hint">Type a sector and press comma to add it. Remove a sector with -.</p>
+                    <div id="targetLocationsChips" class="target-locations-chips" aria-live="polite" aria-label="Selected target locations"></div>
+                    <input id="targetLocation" name="targetLocation" type="text" placeholder="e.g., Singapore, Dubai" autocomplete="off" />
+                    <p class="target-sectors-hint">Type a location and press comma to add it. Remove a location with -.</p>
                   </div>
-                </div>
-                <div class="input-card">
-                  <label for="targetLocation">Location</label>
-                  <p class="input-desc">Where should we hunt for new logos? Add a city or region.</p>
-                  <input id="targetLocation" name="targetLocation" type="text" placeholder="e.g., Singapore" />
                 </div>
                 <button id="generateTargets" type="submit" class="primary">Generate Targets</button>
               </form>
+            </div>
               <div id="targetStatus" class="target-status" role="status" aria-live="polite"></div>
               <div id="targetResults" class="target-results" hidden>
                 <div class="target-results-header">

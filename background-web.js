@@ -31,6 +31,13 @@ const DEFAULT_LLM_MODELS = {
 const GROQ_LEGACY_MODEL = "gpt-oss-20b";
 const GROQ_SECONDARY_MODEL = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
 const LLAMA_33_MODEL = "llama-3.3-70b-versatile";
+const EXPORT_TRANSFORM_TOOL_NAME = "run_js";
+const EXPORT_TRANSFORM_MODEL = LLAMA_33_MODEL;
+const EXPORT_SCHEMA_SAMPLE_LIMIT = 50;
+const EXPORT_TRANSFORM_TIMEOUT_MS = 1200;
+const EXPORT_TRANSFORM_MAX_SCRIPT_LENGTH = 12000;
+const EXPORT_MAX_CELL_CHARS = 32000;
+const EXPORT_TRANSFORM_MAX_ATTEMPTS = 2;
 const BRIEF_MODULES = {
   OVERVIEW: "overview",
   TOP_NEWS: "topNews",
@@ -413,7 +420,7 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
         DEFAULT_LLM_MODELS[LLMProvider.GROQ]
     );
 
-  const allowTools = modelName !== LLAMA_33_MODEL;
+  const allowTools = modelName !== LLAMA_33_MODEL || (opts && opts.allowToolCalls);
   const userCfg = opts.generationConfig || {};
   const temperature = Math.max(0, Math.min(userCfg.temperature ?? 0.3, 1));
   const maxTokens = Math.max(1, Math.min(userCfg.maxOutputTokens ?? userCfg.maxTokens ?? 4000, 8192));
@@ -525,6 +532,9 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
     const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
     if (!outputText) {
+      if (toolCalls.length && opts && opts.allowToolCalls) {
+        return { ok: true, text: "", toolCalls, raw: respJson, status: statusCode, rateLimit };
+      }
       if (toolCalls.length) {
         return {
           error: "Model returned tool calls without textual content.",
@@ -536,7 +546,7 @@ async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
       return { error: "Could not find text in Groq response.", details: respJson, status: statusCode, rateLimit };
     }
 
-    return { ok: true, text: outputText, raw: respJson, status: statusCode, rateLimit };
+    return { ok: true, text: outputText, toolCalls, raw: respJson, status: statusCode, rateLimit };
   } catch (err) {
     return { error: `Network request failed: ${String(err)}` };
   }
@@ -685,6 +695,170 @@ async function callLlmWithRetry(promptText, opts = {}) {
         };
 
   return callGroqWithRetry(promptText, sanitizedOpts, providerSettings);
+}
+
+function parseToolCallArguments(toolCall) {
+  if (!toolCall || !toolCall.function) return null;
+  const args = toolCall.function.arguments;
+  if (!args) return null;
+  if (typeof args === "object") return args;
+  if (typeof args === "string") {
+    try {
+      return JSON.parse(args);
+    } catch (err) {
+      return extractJsonFromText(args);
+    }
+  }
+  return null;
+}
+
+function stripJsComments(source = "") {
+  if (typeof source !== "string") return "";
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n\r]*/g, "");
+}
+
+function validateTransformScript(code) {
+  if (!code || typeof code !== "string") {
+    return { ok: false, error: "Transform code is missing." };
+  }
+  if (code.length > EXPORT_TRANSFORM_MAX_SCRIPT_LENGTH) {
+    return { ok: false, error: "Transform code is too large." };
+  }
+
+  const cleaned = stripJsComments(code);
+  if (!/function\s+transform\s*\(\s*entry\s*,\s*helpers\s*\)/.test(cleaned)) {
+    return { ok: false, error: "Transform code must define function transform(entry, helpers)." };
+  }
+  if (!/return\s*\{/.test(cleaned)) {
+    return { ok: false, error: "Transform code must return an object literal." };
+  }
+
+  const forbidden = /\b(for|while|do|class|import|export|new|try|catch|throw|await|async|yield|with|this|globalThis|window|document|self|postMessage|fetch|XMLHttpRequest|WebSocket|importScripts|Function|eval)\b/;
+  if (forbidden.test(cleaned)) {
+    return { ok: false, error: "Transform code uses disallowed language features." };
+  }
+  if (cleaned.includes("=>")) {
+    return { ok: false, error: "Arrow functions are not allowed in the transform." };
+  }
+
+  const allowedHelpers = new Set(["get", "coalesce", "join", "truncate", "stripHtml", "toString"]);
+  const helperMatches = cleaned.match(/helpers\.[a-zA-Z0-9_]+/g) || [];
+  for (const match of helperMatches) {
+    const name = match.replace("helpers.", "");
+    if (!allowedHelpers.has(name)) {
+      return { ok: false, error: `Transform code uses unsupported helper: ${name}.` };
+    }
+  }
+
+  return { ok: true };
+}
+
+function runTransformScriptInWorker({ code, entries, timeoutMs }) {
+  if (typeof Worker !== "function") {
+    return Promise.resolve({ error: "Web Worker is unavailable in this environment." });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const workerUrl =
+      typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.getURL === "function"
+        ? chrome.runtime.getURL("export-transform-worker.js")
+        : "export-transform-worker.js";
+    const worker = new Worker(workerUrl);
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        worker.terminate();
+      } catch (err) {
+        // ignore
+      }
+      resolve(payload);
+    };
+
+    worker.onmessage = (event) => {
+      const data = event && event.data ? event.data : {};
+      if (data.requestId !== requestId) return;
+      finish(data);
+    };
+    worker.onerror = (err) => {
+      finish({ error: `Transform worker failed: ${err && err.message ? err.message : String(err)}` });
+    };
+
+    timer = setTimeout(() => {
+      finish({ error: "Transform worker timed out." });
+    }, Math.max(200, Number(timeoutMs) || EXPORT_TRANSFORM_TIMEOUT_MS));
+
+    worker.postMessage({ requestId, code, entries });
+  });
+}
+
+async function requestExportTransformScript({ columns, schema, templateName, previousCode = "", errorMessage = "" }) {
+  const prompt = errorMessage
+    ? composeExportTransformRepairPrompt(columns, schema, templateName, previousCode, errorMessage)
+    : composeExportTransformPrompt(columns, schema, templateName);
+  if (!prompt) {
+    return { error: "Export transform prompt is unavailable." };
+  }
+
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: EXPORT_TRANSFORM_TOOL_NAME,
+        description: "Provide JavaScript code for a local export transform.",
+        parameters: {
+          type: "object",
+          properties: {
+            code: { type: "string", description: "JavaScript source for transform(entry, helpers)." },
+          },
+          required: ["code"],
+        },
+      },
+    },
+  ];
+
+  const resp = await callLlmWithRetry(prompt, {
+    model: EXPORT_TRANSFORM_MODEL,
+    secondaryModel: EXPORT_TRANSFORM_MODEL,
+    tools,
+    toolChoice: "auto",
+    allowToolCalls: true,
+    systemInstruction:
+      "You are a coding assistant. If you need to run JavaScript to compute an exact result, call the run_js tool.",
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 1500,
+    },
+  });
+
+  if (resp && resp.error) {
+    return { error: resp.error, details: resp.details || null };
+  }
+
+  let code = "";
+  const toolCalls = Array.isArray(resp && resp.toolCalls) ? resp.toolCalls : [];
+  const matching = toolCalls.find((call) => call && call.function && call.function.name === EXPORT_TRANSFORM_TOOL_NAME);
+  const args = parseToolCallArguments(matching);
+  if (args && typeof args.code === "string") {
+    code = stripMarkdownFences(args.code).trim();
+  }
+
+  if (!code && typeof resp?.text === "string" && resp.text.includes("function transform")) {
+    code = stripMarkdownFences(resp.text).trim();
+  }
+
+  if (!code) {
+    return { error: "Model did not return transform code." };
+  }
+
+  return { ok: true, code };
 }
 
 function extractJsonFromText(s) {
@@ -1592,6 +1766,57 @@ function prepareDatasetForPrompt(entries = []) {
   });
 }
 
+function buildExportSchemaSummary(entries = []) {
+  const maxEntries = Math.max(1, Math.min(EXPORT_SCHEMA_SAMPLE_LIMIT, entries.length || EXPORT_SCHEMA_SAMPLE_LIMIT));
+  const sample = entries.slice(0, maxEntries);
+  const map = new Map();
+  const MAX_DEPTH = 6;
+
+  const recordType = (path, type) => {
+    if (!path) return;
+    const entry = map.get(path) || { path, types: new Set() };
+    entry.types.add(type);
+    map.set(path, entry);
+  };
+
+  const walk = (value, path, depth) => {
+    if (depth > MAX_DEPTH) return;
+    if (value === null || value === undefined) {
+      recordType(path, "null");
+      return;
+    }
+    if (Array.isArray(value)) {
+      recordType(path, "array");
+      const childPath = `${path}[]`;
+      value.slice(0, 10).forEach((item) => {
+        walk(item, childPath, depth + 1);
+      });
+      return;
+    }
+    const valueType = typeof value;
+    if (valueType === "object") {
+      recordType(path, "object");
+      Object.keys(value).forEach((key) => {
+        const nextPath = path ? `${path}.${key}` : key;
+        walk(value[key], nextPath, depth + 1);
+      });
+      return;
+    }
+    recordType(path, valueType);
+  };
+
+  sample.forEach((entry) => walk(entry, "", 0));
+  const fields = Array.from(map.values())
+    .filter((field) => field.path)
+    .map((field) => ({
+      path: field.path,
+      types: Array.from(field.types).sort(),
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  return fields;
+}
+
 function composeExportPrompt(columns, entries, format) {
   const dataset = prepareDatasetForPrompt(entries);
   if (promptBuilders && typeof promptBuilders.buildExportPrompt === "function") {
@@ -1600,24 +1825,57 @@ function composeExportPrompt(columns, entries, format) {
   return "";
 }
 
+function composeExportTransformPrompt(columns, schema, templateName) {
+  if (promptBuilders && typeof promptBuilders.buildExportTransformPrompt === "function") {
+    return promptBuilders.buildExportTransformPrompt({ columns, schema, templateName });
+  }
+  return "";
+}
+
+function composeExportTransformRepairPrompt(columns, schema, templateName, previousCode, errorMessage) {
+  if (promptBuilders && typeof promptBuilders.buildExportTransformRepairPrompt === "function") {
+    return promptBuilders.buildExportTransformRepairPrompt({
+      columns,
+      schema,
+      templateName,
+      previousCode,
+      errorMessage,
+    });
+  }
+  return "";
+}
+
+function sanitizeExportValue(value) {
+  let text = "";
+  if (value === undefined || value === null) {
+    text = "";
+  } else if (typeof value === "string") {
+    text = value;
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    text = String(value);
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch (err) {
+      text = String(value);
+    }
+  }
+
+  if (/^[=+\-@]/.test(text)) {
+    text = `'${text}`;
+  }
+  if (text.length > EXPORT_MAX_CELL_CHARS) {
+    text = text.slice(0, EXPORT_MAX_CELL_CHARS);
+  }
+  return text;
+}
+
 function ensureRowValues(row, columns) {
   const normalized = {};
   columns.forEach((col) => {
     const header = col.header;
     const value = row && Object.prototype.hasOwnProperty.call(row, header) ? row[header] : "";
-    if (value === undefined || value === null) {
-      normalized[header] = "";
-    } else if (typeof value === "string") {
-      normalized[header] = value;
-    } else if (typeof value === "number" || typeof value === "boolean") {
-      normalized[header] = String(value);
-    } else {
-      try {
-        normalized[header] = JSON.stringify(value);
-      } catch (err) {
-        normalized[header] = String(value);
-      }
-    }
+    normalized[header] = sanitizeExportValue(value);
   });
   return normalized;
 }
@@ -1651,6 +1909,45 @@ function filterHistoryEntries(entries, selection = {}) {
   }
 
   return [...entries];
+}
+
+async function persistTemplateTransform({ templateId, transformScript, transformScriptApproved }) {
+  if (!templateId) return;
+  const data = await chrome.storage.local.get([EXPORT_TEMPLATES_KEY, EXPORT_TEMPLATE_KEY]);
+  const collection = data && data[EXPORT_TEMPLATES_KEY];
+  const updatedAt = new Date().toISOString();
+
+  let updatedCollection = collection;
+  if (collection && Array.isArray(collection.templates)) {
+    const templates = collection.templates.map((tpl) => {
+      if (!tpl || tpl.id !== templateId) return tpl;
+      return {
+        ...tpl,
+        transformScript: typeof transformScript === "string" ? transformScript : tpl.transformScript || "",
+        transformScriptApproved: !!transformScriptApproved,
+        transformScriptUpdatedAt: updatedAt,
+      };
+    });
+    updatedCollection = { ...collection, templates };
+  }
+
+  const legacyTemplate = data && data[EXPORT_TEMPLATE_KEY];
+  let updatedLegacy = legacyTemplate;
+  if (legacyTemplate && legacyTemplate.id === templateId) {
+    updatedLegacy = {
+      ...legacyTemplate,
+      transformScript: typeof transformScript === "string" ? transformScript : legacyTemplate.transformScript || "",
+      transformScriptApproved: !!transformScriptApproved,
+      transformScriptUpdatedAt: updatedAt,
+    };
+  }
+
+  const payload = {};
+  if (updatedCollection) payload[EXPORT_TEMPLATES_KEY] = updatedCollection;
+  if (updatedLegacy) payload[EXPORT_TEMPLATE_KEY] = updatedLegacy;
+  if (Object.keys(payload).length) {
+    await chrome.storage.local.set(payload);
+  }
 }
 
 function normalizeLocationString(candidate) {
@@ -3770,59 +4067,88 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             return;
           }
 
-  const prompt = composeExportPrompt(columns, filteredEntries, format);
-  const llmResult = await callLlmWithRetry(prompt, {
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: 4096,
-    },
-  });
-
-          if (llmResult.error) {
-            sendResponse({ error: llmResult.error, details: llmResult.details });
-            return;
-          }
-
-          const rawText = typeof llmResult.text === "string" ? llmResult.text : "";
-          let notes = "";
+          const templateId = activeTemplate && activeTemplate.id ? activeTemplate.id : req.templateId || "";
+          const schema = buildExportSchemaSummary(history);
+          let transformScript = typeof activeTemplate?.transformScript === "string" ? activeTemplate.transformScript.trim() : "";
+          let attempts = 0;
+          let lastError = "";
           let tableRows = [];
 
-          const { headers: parsedHeaders, rows: parsedRows } = parseMarkdownTable(rawText);
-          if (parsedRows && parsedRows.length) {
-            tableRows = parsedRows;
-          }
-          const notesMatch = rawText.match(/Notes:\s*(.+)/i);
-          if (notesMatch && notesMatch[1]) {
-            notes = notesMatch[1].trim();
-          }
-
-          if (!tableRows.length) {
-            const { parsed } = parseModelJsonResponse(llmResult);
-            if (parsed && Array.isArray(parsed.rows)) {
-              tableRows = parsed.rows;
-              notes = parsed.notes || "";
+          while (attempts < EXPORT_TRANSFORM_MAX_ATTEMPTS) {
+            if (!transformScript || lastError) {
+              const scriptResult = await requestExportTransformScript({
+                columns,
+                schema,
+                templateName: activeTemplate?.name || "",
+                previousCode: transformScript,
+                errorMessage: lastError,
+              });
+              if (scriptResult.error) {
+                sendResponse({ error: scriptResult.error, details: scriptResult.details || null });
+                return;
+              }
+              transformScript = scriptResult.code;
+              await persistTemplateTransform({
+                templateId,
+                transformScript,
+                transformScriptApproved: true,
+              });
             }
+
+            const validation = validateTransformScript(transformScript);
+            if (!validation.ok) {
+              lastError = validation.error;
+              attempts += 1;
+              continue;
+            }
+
+            const workerResult = await runTransformScriptInWorker({
+              code: transformScript,
+              entries: filteredEntries,
+              timeoutMs: EXPORT_TRANSFORM_TIMEOUT_MS,
+            });
+            if (!workerResult || workerResult.error) {
+              lastError = workerResult?.error || "Transform execution failed.";
+              attempts += 1;
+              continue;
+            }
+
+            tableRows = Array.isArray(workerResult.rows) ? workerResult.rows : [];
+            if (!tableRows.length) {
+              lastError = "Transform did not return rows for export.";
+              attempts += 1;
+              continue;
+            }
+            if (tableRows.length !== filteredEntries.length) {
+              lastError = `Transform returned ${tableRows.length} rows for ${filteredEntries.length} entries.`;
+              attempts += 1;
+              continue;
+            }
+
+            lastError = "";
+            break;
           }
 
-          if (!tableRows.length) {
-            sendResponse({ error: "Model did not return structured rows for export.", details: rawText || null });
+          if (lastError) {
+            sendResponse({ error: lastError });
             return;
           }
 
-          const normalizedRows = tableRows.map((row) => ensureRowValues(row, columns));
+          const normalizedRows = tableRows.map((row) => ensureRowValues(row || {}, columns));
           const headers = columns.map((col) => col.header);
+          const notes = "";
+
+          if (transformScript && !activeTemplate?.transformScriptApproved) {
+            persistTemplateTransform({
+              templateId,
+              transformScript,
+              transformScriptApproved: true,
+            }).catch(() => {});
+          }
 
           let markdownTable = "";
           if (format === "md") {
-            if (parsedHeaders && parsedHeaders.length) {
-              const body = normalizedRows
-                .map((row) => `| ${headers.map((h) => row[h] || "").join(" | ")} |`)
-                .join("\n");
-              const separator = `| ${headers.map(() => "---").join(" | ")} |`;
-              markdownTable = `| ${headers.join(" | ")} |\n${separator}${body ? `\n${body}` : ""}`;
-            } else {
-              markdownTable = generateMarkdownFromRows(headers, normalizedRows);
-            }
+            markdownTable = generateMarkdownFromRows(headers, normalizedRows);
           }
 
           let base64Data = "";

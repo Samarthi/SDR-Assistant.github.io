@@ -325,6 +325,87 @@ Notes: <optional short quality notes or considerations>
 - ${formatInstruction}`;
   }
 
+  function buildExportTransformPrompt({ columns = [], schema = [], templateName = "" }) {
+    const columnLines = columns.map((col, idx) => `${idx + 1}. ${col.header} - ${col.description}`).join("\n");
+    const schemaLines = schema
+      .map((field, idx) => {
+        const types = Array.isArray(field.types) && field.types.length ? field.types.join("|") : "unknown";
+        return `${idx + 1}. ${field.path} (${types})`;
+      })
+      .join("\n");
+    const templateLabel = templateName ? `Template: ${templateName}` : "Template: (unnamed)";
+
+    return `You are generating a JavaScript transform for a local export. You MUST call the run_js tool.
+${templateLabel}
+
+Column specifications (respect the header text exactly):
+${columnLines}
+
+Available schema paths (values are NOT provided; use these paths only):
+${schemaLines || "(no schema paths provided)"}
+
+Instructions:
+- Call the run_js tool exactly once and provide the JavaScript code in the "code" field.
+- Do not return any normal text or markdown.
+- The code MUST define a function: function transform(entry, helpers) { return { "<Header>": value, ... }; }
+- Use helpers.get(entry, "path") to read values by path.
+- Use only these helpers: get, coalesce, join, truncate, stripHtml, toString.
+- Do not use loops, arrow functions, eval, new Function, network calls, or globals.
+- Return empty strings for missing values.
+
+Example code:
+function transform(entry, helpers) {
+  return {
+    "Company": helpers.coalesce(helpers.get(entry, "result.company_name"), helpers.get(entry, "request.company")),
+    "HQ Location": helpers.get(entry, "result.hq_location"),
+    "Top News": helpers.join(helpers.get(entry, "result.top_5_news[].title"), "; "),
+    "Brief Summary": helpers.truncate(helpers.stripHtml(helpers.get(entry, "result.brief_html")), 300)
+  };
+}`;
+  }
+
+  function buildExportTransformRepairPrompt({
+    columns = [],
+    schema = [],
+    templateName = "",
+    previousCode = "",
+    errorMessage = "",
+  }) {
+    const columnLines = columns.map((col, idx) => `${idx + 1}. ${col.header} - ${col.description}`).join("\n");
+    const schemaLines = schema
+      .map((field, idx) => {
+        const types = Array.isArray(field.types) && field.types.length ? field.types.join("|") : "unknown";
+        return `${idx + 1}. ${field.path} (${types})`;
+      })
+      .join("\n");
+    const templateLabel = templateName ? `Template: ${templateName}` : "Template: (unnamed)";
+    const errorBlock = errorMessage ? `Error:\n${errorMessage}` : "Error: (unspecified)";
+    const codeBlock = previousCode ? previousCode : "// (no previous code provided)";
+
+    return `You are fixing a JavaScript transform for a local export. You MUST call the run_js tool.
+${templateLabel}
+
+Column specifications (respect the header text exactly):
+${columnLines}
+
+Available schema paths (values are NOT provided; use these paths only):
+${schemaLines || "(no schema paths provided)"}
+
+${errorBlock}
+
+Previous code:
+${codeBlock}
+
+Instructions:
+- Call the run_js tool exactly once and provide the corrected JavaScript code in the "code" field.
+- Do not return any normal text or markdown.
+- The code MUST define a function: function transform(entry, helpers) { return { "<Header>": value, ... }; }
+- Use helpers.get(entry, "path") to read values by path.
+- Use only these helpers: get, coalesce, join, truncate, stripHtml, toString.
+- Do not use loops, arrow functions, eval, new Function, network calls, or globals.
+- Return empty strings for missing values.`;
+  }
+
   const Prompts = {
     buildTargetsPrompt,
     buildTelephonicPitchPrompt,
@@ -336,6 +417,8 @@ Notes: <optional short quality notes or considerations>
     buildPersonaBriefPrompt,
     buildProductContextPrompt,
     buildExportPrompt,
+    buildExportTransformPrompt,
+    buildExportTransformRepairPrompt,
   };
 
   if (typeof module !== "undefined" && module.exports) {

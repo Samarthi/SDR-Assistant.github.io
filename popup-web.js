@@ -3288,7 +3288,32 @@ function normalizeTemplate(template, fallbackIndex = 0) {
     ? new Date(template.updatedAt).toISOString()
     : new Date().toISOString();
   const id = template.id || `tpl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return { id, name, format, columns, updatedAt };
+  const transformScript = template.transformScript ? String(template.transformScript) : '';
+  const transformScriptApproved = !!template.transformScriptApproved;
+  const transformScriptUpdatedAt = template.transformScriptUpdatedAt && !Number.isNaN(new Date(template.transformScriptUpdatedAt).getTime())
+    ? new Date(template.transformScriptUpdatedAt).toISOString()
+    : '';
+  return {
+    id,
+    name,
+    format,
+    columns,
+    updatedAt,
+    transformScript,
+    transformScriptApproved,
+    transformScriptUpdatedAt,
+  };
+}
+
+function areColumnsEqual(a = [], b = []) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i] || {};
+    const right = b[i] || {};
+    if ((left.header || '') !== (right.header || '')) return false;
+    if ((left.description || '') !== (right.description || '')) return false;
+  }
+  return true;
 }
 
 function findTemplateById(id) {
@@ -3674,6 +3699,14 @@ async function persistExportTemplate(template, options = {}) {
   }, exportTemplates.length);
   if (!payload) return null;
 
+  const columnsChanged = baseTemplate ? !areColumnsEqual(baseTemplate.columns || [], payload.columns || []) : false;
+  const formatChanged = baseTemplate ? baseTemplate.format !== payload.format : false;
+  if ((columnsChanged || formatChanged) && !options.preserveTransform) {
+    payload.transformScript = '';
+    payload.transformScriptApproved = false;
+    payload.transformScriptUpdatedAt = '';
+  }
+
   const existingIdx = exportTemplates.findIndex((tpl) => tpl.id === payload.id);
   if (existingIdx !== -1 && !options.forceNewId) {
     exportTemplates[existingIdx] = payload;
@@ -3684,6 +3717,71 @@ async function persistExportTemplate(template, options = {}) {
   await persistTemplatesState();
   await clearExportTemplateDraft();
   return payload;
+}
+
+function openTransformReviewModal(template, onUpdate) {
+  if (!template) return;
+  openModal({
+    title: 'Export transform',
+    render: ({ body, footer, close }) => {
+      const script = template.transformScript || '';
+      const status = document.createElement('p');
+      status.className = 'modal-helper';
+      status.textContent = script
+        ? (template.transformScriptApproved ? 'Approved transform script.' : 'Transform script pending approval.')
+        : 'No transform script yet. Run an export to generate one.';
+      body.appendChild(status);
+
+      const textarea = document.createElement('textarea');
+      textarea.readOnly = true;
+      textarea.rows = 12;
+      textarea.style.width = '100%';
+      textarea.value = script || '// No script available yet.';
+      body.appendChild(textarea);
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'ghost';
+      closeBtn.textContent = 'Close';
+      closeBtn.addEventListener('click', close);
+
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'ghost';
+      resetBtn.textContent = 'Reset';
+      resetBtn.disabled = !script;
+      resetBtn.addEventListener('click', async () => {
+        const updated = await persistExportTemplate({
+          ...template,
+          transformScript: '',
+          transformScriptApproved: false,
+          transformScriptUpdatedAt: '',
+        }, { preserveTransform: true });
+        if (typeof onUpdate === 'function') onUpdate(updated);
+        close();
+      });
+
+      const approveBtn = document.createElement('button');
+      approveBtn.type = 'button';
+      approveBtn.className = 'primary';
+      approveBtn.textContent = template.transformScriptApproved ? 'Approved' : 'Approve';
+      approveBtn.disabled = !script || template.transformScriptApproved;
+      approveBtn.addEventListener('click', async () => {
+        const updated = await persistExportTemplate({
+          ...template,
+          transformScript: script,
+          transformScriptApproved: true,
+          transformScriptUpdatedAt: new Date().toISOString(),
+        }, { preserveTransform: true });
+        if (typeof onUpdate === 'function') onUpdate(updated);
+        close();
+      });
+
+      footer.appendChild(closeBtn);
+      footer.appendChild(resetBtn);
+      footer.appendChild(approveBtn);
+    },
+  });
 }
 
 function base64ToBlob(base64, mimeType) {
@@ -4314,6 +4412,7 @@ function renderExportFlowModal({ body, footer, close }) {
     inProgress: false,
     result: null,
     error: '',
+    requiresReview: false,
   };
 
   if (!activeExportState) {
@@ -4527,6 +4626,17 @@ function renderExportFlowModal({ body, footer, close }) {
       meta.textContent = `${formatLabel} • Updated ${updatedLabel}`;
       card.appendChild(meta);
 
+      const transformMeta = document.createElement('div');
+      transformMeta.className = 'export-template-meta';
+      if (template.transformScript) {
+        transformMeta.textContent = template.transformScriptApproved
+          ? 'Transform: approved'
+          : 'Transform: pending review';
+      } else {
+        transformMeta.textContent = 'Transform: not generated';
+      }
+      card.appendChild(transformMeta);
+
       const columnsList = document.createElement('div');
       columnsList.className = 'export-template-pill-list';
       (template.columns || []).forEach((col) => {
@@ -4539,6 +4649,44 @@ function renderExportFlowModal({ body, footer, close }) {
         columnsList.appendChild(pill);
       });
       card.appendChild(columnsList);
+
+      const actions = document.createElement('div');
+      actions.className = 'export-template-card-actions';
+      const reviewBtn = document.createElement('button');
+      reviewBtn.type = 'button';
+      reviewBtn.className = 'ghost';
+      reviewBtn.textContent = template.transformScriptApproved ? 'View transform' : 'Review transform';
+      reviewBtn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        openTransformReviewModal(template, (updated) => {
+          if (updated) {
+            renderTemplateSummary();
+            persistStateDebounced();
+          }
+        });
+      });
+      actions.appendChild(reviewBtn);
+
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'ghost';
+      resetBtn.textContent = 'Reset transform';
+      resetBtn.disabled = !template.transformScript;
+      resetBtn.addEventListener('click', async (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        await persistExportTemplate({
+          ...template,
+          transformScript: '',
+          transformScriptApproved: false,
+          transformScriptUpdatedAt: '',
+        }, { preserveTransform: true });
+        renderTemplateSummary();
+        persistStateDebounced();
+      });
+      actions.appendChild(resetBtn);
+      card.appendChild(actions);
 
       templateSection.appendChild(card);
     });
@@ -4970,7 +5118,27 @@ function renderExportFlowModal({ body, footer, close }) {
       text.textContent = message;
       statusEl.appendChild(text);
     } else {
-      statusEl.textContent = message;
+      const text = document.createElement('span');
+      text.textContent = message;
+      statusEl.appendChild(text);
+      if (state.requiresReview) {
+        const reviewBtn = document.createElement('button');
+        reviewBtn.type = 'button';
+        reviewBtn.className = 'ghost';
+        reviewBtn.textContent = 'Review transform';
+        reviewBtn.style.marginLeft = '10px';
+        reviewBtn.addEventListener('click', () => {
+          const selected = getSelectedTemplate();
+          if (!selected) return;
+          openTransformReviewModal(selected, (updated) => {
+            if (updated) {
+              renderTemplateSummary();
+              persistStateDebounced();
+            }
+          });
+        });
+        statusEl.appendChild(reviewBtn);
+      }
     }
     statusEl.style.color = type === 'error' ? '#b91c1c' : '#374151';
   }
@@ -5022,6 +5190,7 @@ function renderExportFlowModal({ body, footer, close }) {
   async function runExport() {
     state.inProgress = true;
     state.error = '';
+    state.requiresReview = false;
     setStatus('Formatting export...', { loading: true });
     refreshFooterButtons();
     notesEl.style.display = 'none';
@@ -5076,7 +5245,26 @@ function renderExportFlowModal({ body, footer, close }) {
     if (!response || response.error) {
       state.error = response?.error || 'Export failed.';
       state.result = null;
-      setStatus(`Error: ${state.error}`, { type: 'error' });
+      if (response?.requiresReview) {
+        state.requiresReview = true;
+        await loadExportTemplateFromStorage();
+        renderTemplateSummary();
+        const nextTemplateId = response.templateId || selectedTemplateId || state.templateId;
+        if (nextTemplateId) {
+          state.templateId = nextTemplateId;
+          setSelectedTemplate(nextTemplateId);
+          const refreshed = findTemplateById(nextTemplateId);
+          if (refreshed && refreshed.format) {
+            state.format = refreshed.format;
+          }
+          syncFormatRadios();
+        }
+      }
+      if (response?.requiresReview) {
+        setStatus(state.error, { type: 'info' });
+      } else {
+        setStatus(`Error: ${state.error}`, { type: 'error' });
+      }
       refreshFooterButtons();
       persistStateDebounced();
       return;
@@ -5090,6 +5278,7 @@ function renderExportFlowModal({ body, footer, close }) {
       format: response.download?.format || state.format,
     };
     state.error = '';
+    state.requiresReview = false;
 
     setStatus('Export ready. Review the preview and download the file when ready.', { type: 'info' });
     renderPreview();

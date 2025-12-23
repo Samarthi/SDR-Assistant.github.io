@@ -1731,6 +1731,169 @@ h3, h4 {
     gap: 16px;
 }
 
+.section-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.section-hint {
+    color: var(--color-text-muted);
+    font-size: 12px;
+}
+
+.inline-edit-btn {
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.draft-icon-btn {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.inline-edit-btn:hover,
+.inline-edit-btn:focus-visible {
+    background: var(--color-surface-alt);
+    border-color: var(--color-border-strong);
+}
+
+.summary-value-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.summary-value-locked {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0.75;
+}
+
+.summary-label-locked::after {
+    content: " (locked)";
+    font-weight: 400;
+    color: var(--color-text-muted);
+    font-size: 12px;
+}
+
+.toastui-editor-defaultUI {
+    border-radius: 12px;
+}
+
+.inline-edit-icon {
+    width: 16px;
+    height: 16px;
+    display: inline-block;
+}
+
+.editable-section {
+    position: relative;
+}
+
+.editable-section:hover .inline-edit-btn,
+.editable-section .inline-edit-btn:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.email-draft-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: relative;
+}
+
+.email-draft-controls {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    padding: 6px 8px;
+    box-shadow: var(--shadow-soft);
+    z-index: 1;
+}
+
+.email-draft-card .outputBox {
+    padding-top: 52px;
+}
+
+.draft-icon-btn {
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text);
+    border-radius: 10px;
+    padding: 10px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 120ms ease, border-color 120ms ease;
+}
+
+.draft-icon-btn:hover,
+.draft-icon-btn:focus-visible {
+    background: var(--color-surface-alt);
+    border-color: var(--color-border-strong);
+}
+
+.toast-root {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 9999;
+    pointer-events: none;
+}
+
+.toast {
+    background: var(--color-text);
+    color: var(--color-surface);
+    border: 1px solid var(--color-border-strong);
+    box-shadow: var(--shadow-strong);
+    border-radius: 10px;
+    padding: 10px 14px;
+    min-width: 180px;
+    pointer-events: auto;
+    opacity: 0;
+    transform: translateY(-6px);
+    transition: opacity 160ms ease, transform 160ms ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
 #briefSummarySection {
     padding: 0;
     margin: 0;
@@ -2020,18 +2183,6 @@ h3, h4 {
 
 #formPane {
     padding: 0;
-}
-
-#appLayout {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    align-items: stretch;
-    position: relative;
-    flex: 1 1 auto;
-    min-height: 0;
-    padding-top: 12px;
-    overflow-y: auto;
 }
 
 .mode-view[hidden] {
@@ -3081,10 +3232,6 @@ button.ghost:disabled {
 }
 
 @media (max-width: 640px) {
-    #appLayout {
-        flex-direction: column;
-    }
-
     #mainPane {
         flex-direction: column;
     }

@@ -15,6 +15,7 @@ const briefSummarySection = document.getElementById('briefSummarySection');
 const briefHqValue = document.getElementById('briefHqValue');
 const briefRevenueValue = document.getElementById('briefRevenueValue');
 const briefIndustryValue = document.getElementById('briefIndustryValue');
+const briefHqEditBtn = document.getElementById('briefHqEdit');
 const topNewsSection = document.getElementById('topNewsSection');
 const topNewsList = document.getElementById('topNewsList');
 const topNewsHint = document.getElementById('topNewsHint');
@@ -25,6 +26,9 @@ const telePitchOut = document.getElementById('telePitchOut');
 const copyEmailBtn = document.getElementById('copyEmail');
 const personaTabs = document.getElementById('personaTabs');
 const telePersonaTabs = document.getElementById('telePersonaTabs');
+const editEmailDraftBtn = document.getElementById('editEmailDraft');
+const editTelePitchBtn = document.getElementById('editTelePitch');
+let toastRoot = document.getElementById('toastRoot');
 const reviseEmailPersonaBtn = document.getElementById('reviseEmailPersona');
 const reviseEmailAllBtn = document.getElementById('reviseEmailAll');
 const revisePitchPersonaBtn = document.getElementById('revisePitchPersona');
@@ -936,6 +940,136 @@ function setTelePitchOutput(message, { isError = false, allowMarkdown = false } 
   telePitchOut.style.color = isError ? '#b91c1c' : '';
 }
 
+function ensureManualEdits() {
+  if (!activeBriefData) activeBriefData = createEmptyBriefData();
+  if (!activeBriefData.manualEdits) {
+    activeBriefData.manualEdits = createEmptyBriefData().manualEdits;
+  }
+  return activeBriefData.manualEdits;
+}
+
+function updateManualVersionIndexes() {
+  if (!activeBriefData) return;
+  activeBriefData.personaEmailVersionIndexes = Array.isArray(personaEmailVersions)
+    ? personaEmailVersions.map((v) => {
+      const idx = clampIndex(
+        typeof v?.activeIndex === 'number' ? v.activeIndex : 0,
+        Array.isArray(v?.versions) ? v.versions : []
+      );
+      return idx < 0 ? 0 : idx;
+    })
+    : [];
+
+  activeBriefData.telephonicPitchVersionIndexes = Array.isArray(telephonicPitchVersions)
+    ? telephonicPitchVersions.map((v) => {
+      const idx = clampIndex(
+        typeof v?.activeIndex === 'number' ? v.activeIndex : 0,
+        Array.isArray(v?.versions) ? v.versions : []
+      );
+      return idx < 0 ? 0 : idx;
+    })
+    : [];
+}
+
+function applyEmailEdit(personaIdx, subject, body) {
+  if (!activeBriefData || personaIdx < 0) return;
+  const manual = ensureManualEdits();
+  const personasData = Array.isArray(activeBriefData.personas) ? activeBriefData.personas : [];
+  if (!Array.isArray(activeBriefData.personaEmails)) activeBriefData.personaEmails = [];
+  const base = activeBriefData.personaEmails[personaIdx] || {};
+  const nextDraft = { ...base, subject: subject || '', body: body || '' };
+
+  activeBriefData.personaEmails[personaIdx] = nextDraft;
+  if (!personaEmailVersions[personaIdx]) {
+    personaEmailVersions[personaIdx] = buildVersionEntry(nextDraft);
+  } else {
+    personaEmailVersions[personaIdx].versions.push(nextDraft);
+    personaEmailVersions[personaIdx].activeIndex = personaEmailVersions[personaIdx].versions.length - 1;
+  }
+  manual.emails[personaIdx] = true;
+  activeBriefData.personaEmailVersions = personaEmailVersions;
+  updateManualVersionIndexes();
+  const telephonicPitchesData = Array.isArray(activeBriefData.telephonicPitches) ? activeBriefData.telephonicPitches : [];
+  renderPersonaEmailDrafts(personasData, activeBriefData.personaEmails, telephonicPitchesData, activeBriefData.email);
+  activatePersonaTab(personaIdx);
+  renderEmailVersionControls();
+  persistRevisionToHistory();
+}
+
+function applyTelePitchEdit(personaIdx, content) {
+  if (!activeBriefData || personaIdx < 0) return;
+  const manual = ensureManualEdits();
+  if (!Array.isArray(activeBriefData.telephonicPitches)) activeBriefData.telephonicPitches = [];
+  const nextDraft = { script: content || '', full_pitch: content || '' };
+  activeBriefData.telephonicPitches[personaIdx] = nextDraft;
+  activeBriefData.telephonicPitchError = '';
+  telephonicPitchErrorMessage = '';
+  if (!telephonicPitchVersions[personaIdx]) {
+    telephonicPitchVersions[personaIdx] = buildVersionEntry(nextDraft);
+  } else {
+    telephonicPitchVersions[personaIdx].versions.push(nextDraft);
+    telephonicPitchVersions[personaIdx].activeIndex = telephonicPitchVersions[personaIdx].versions.length - 1;
+  }
+  manual.telePitches[personaIdx] = true;
+  activeBriefData.telephonicPitchVersions = telephonicPitchVersions;
+  activeBriefData.telephonicPitchAttempts = [];
+  telephonicPitchDebugAttempts = [];
+  updateManualVersionIndexes();
+  const personasData = Array.isArray(activeBriefData.personas) ? activeBriefData.personas : [];
+  renderPersonaEmailDrafts(personasData, activeBriefData.personaEmails, activeBriefData.telephonicPitches, activeBriefData.email);
+  activatePersonaTab(personaIdx >= 0 ? personaIdx : 0);
+  renderPitchVersionControls();
+  persistRevisionToHistory();
+}
+
+async function revisePersonaOutputs(personaIdx) {
+  if (!activeBriefData || personaIdx < 0) return;
+  const personas = Array.isArray(activeBriefData.personas) ? activeBriefData.personas : [];
+  const persona = personas[personaIdx] || {};
+  const company = (companyEl?.value || activeBriefData?.company_name || '').trim();
+  const product = (productEl?.value || '').trim();
+  const location = (locationEl?.value || '').trim();
+  const pitchingOrg = ((cachedPitchingCompany || await pitchingCompanyLoadPromise) || '').trim();
+  const payloadBase = { company, product, location, pitchingOrg };
+
+  const emailEntry = personaEmailVersions?.[personaIdx];
+  const emailDraft = emailEntry?.versions?.[emailEntry.activeIndex] || activeBriefData?.personaEmails?.[personaIdx] || {};
+  const pitchEntry = telephonicPitchVersions?.[personaIdx];
+  const pitchDraft = pitchEntry?.versions?.[pitchEntry.activeIndex] || activeBriefData?.telephonicPitches?.[personaIdx] || {};
+
+  const errors = [];
+
+  try {
+    const emailResp = await sendMessagePromise({
+      action: 'revisePersonaEmail',
+      persona,
+      email: emailDraft,
+      ...payloadBase,
+    });
+    if (emailResp?.error || !emailResp?.draft) throw new Error(emailResp?.error || 'Email revision failed');
+    applyRevisionPreview({ drafts: [{ personaIndex: personaIdx, draft: emailResp.draft }] }, 'email');
+  } catch (err) {
+    errors.push(err?.message || String(err));
+  }
+
+  try {
+    const pitchResp = await sendMessagePromise({
+      action: 'revisePersonaPitch',
+      persona,
+      pitch: pitchDraft,
+      ...payloadBase,
+    });
+    if (pitchResp?.error || !pitchResp?.draft) throw new Error(pitchResp?.error || 'Pitch revision failed');
+    applyRevisionPreview({ drafts: [{ personaIndex: personaIdx, draft: pitchResp.draft }] }, 'pitch');
+  } catch (err) {
+    errors.push(err?.message || String(err));
+  }
+
+  if (errors.length) {
+    throw new Error(errors.join(' | '));
+  }
+}
+
 function normalizeTargetSector(value) {
   if (typeof value !== 'string') return '';
   return value.replace(/\s+/g, ' ').trim();
@@ -1275,12 +1409,22 @@ function createEmptyBriefData() {
     email: {},
     overview_error: '',
     persona_error: '',
+    manualEdits: {
+      overview: {
+        hq: false,
+      },
+      personas: {},
+      emails: {},
+      telePitches: {},
+    },
   };
 }
 
-function mergeBriefData(partial = {}) {
+function mergeBriefData(partial = {}, options = {}) {
   if (!activeBriefData) activeBriefData = createEmptyBriefData();
   const next = { ...activeBriefData };
+  const manual = next.manualEdits || createEmptyBriefData().manualEdits;
+  next.manualEdits = manual;
 
   const overview = partial.overview && typeof partial.overview === 'object' ? partial.overview : null;
   if (overview) {
@@ -1300,12 +1444,16 @@ function mergeBriefData(partial = {}) {
     }
   };
 
+  if (partial.manualEdits && typeof partial.manualEdits === 'object') {
+    next.manualEdits = { ...next.manualEdits, ...partial.manualEdits };
+  }
+
   assign('modules');
   assign('brief_html');
   assign('company_name');
   assign('revenue_estimate');
   assign('industry_sector');
-  assign('hq_location');
+  if (!manual?.overview?.hq || options.forceManual) assign('hq_location');
   assign('hq_lookup_error');
   assign('overview_error');
   assign('persona_error');
@@ -1314,11 +1462,29 @@ function mergeBriefData(partial = {}) {
   }
 
   if (Array.isArray(partial.top_5_news)) next.top_5_news = partial.top_5_news;
-  if (Array.isArray(partial.personas)) next.personas = partial.personas;
-  if (Array.isArray(partial.personaEmails)) next.personaEmails = partial.personaEmails;
+  if (Array.isArray(partial.personas)) {
+    const incoming = partial.personas;
+    next.personas = incoming.map((p, idx) => {
+      if (manual?.personas?.[idx]) return next.personas?.[idx] || p;
+      return p;
+    });
+  }
+  if (Array.isArray(partial.personaEmails)) {
+    const incoming = partial.personaEmails;
+    next.personaEmails = incoming.map((p, idx) => {
+      if (manual?.emails?.[idx]) return next.personaEmails?.[idx] || p;
+      return p;
+    });
+  }
   if (Array.isArray(partial.personaEmailVersions)) next.personaEmailVersions = partial.personaEmailVersions;
   if (Array.isArray(partial.personaEmailVersionIndexes)) next.personaEmailVersionIndexes = partial.personaEmailVersionIndexes;
-  if (Array.isArray(partial.telephonicPitches)) next.telephonicPitches = partial.telephonicPitches;
+  if (Array.isArray(partial.telephonicPitches)) {
+    const incoming = partial.telephonicPitches;
+    next.telephonicPitches = incoming.map((p, idx) => {
+      if (manual?.telePitches?.[idx]) return next.telephonicPitches?.[idx] || p;
+      return p;
+    });
+  }
   if (Array.isArray(partial.telephonicPitchAttempts)) next.telephonicPitchAttempts = partial.telephonicPitchAttempts;
   if (Array.isArray(partial.telephonicPitchVersions)) next.telephonicPitchVersions = partial.telephonicPitchVersions;
   if (Array.isArray(partial.telephonicPitchVersionIndexes)) next.telephonicPitchVersionIndexes = partial.telephonicPitchVersionIndexes;
@@ -2204,9 +2370,11 @@ copyEmailBtn?.addEventListener('click', async () => {
 
   try {
     await navigator.clipboard.writeText(text);
-    if (status) {
     const personaLabel = getActivePersonaLabel();
-    status.innerText = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+    const msg = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+    showToast('Email copied');
+    if (status) {
+      status.innerText = msg;
       status.style.color = '';
     }
   } catch (err) {
@@ -2220,9 +2388,11 @@ copyEmailBtn?.addEventListener('click', async () => {
     try {
       const ok = document.execCommand('copy');
       if (ok) {
-        if (status) {
         const personaLabel = getActivePersonaLabel();
-        status.innerText = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+        const msg = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
+        showToast('Email copied');
+        if (status) {
+          status.innerText = msg;
           status.style.color = '';
         }
       } else {
@@ -2244,6 +2414,9 @@ reviseEmailPersonaBtn?.addEventListener('click', () => openRevisionPlayground({ 
 reviseEmailAllBtn?.addEventListener('click', () => openRevisionPlayground({ type: 'email', scope: 'all' }));
 revisePitchPersonaBtn?.addEventListener('click', () => openRevisionPlayground({ type: 'pitch', scope: 'single' }));
 revisePitchAllBtn?.addEventListener('click', () => openRevisionPlayground({ type: 'pitch', scope: 'all' }));
+briefHqEditBtn?.addEventListener('click', openHqEditor);
+editEmailDraftBtn?.addEventListener('click', openEmailEditor);
+editTelePitchBtn?.addEventListener('click', openTelePitchEditor);
 
 function setModalButtonIcon(button, iconName, fallbackText = '') {
   if (!button) return;
@@ -2253,6 +2426,42 @@ function setModalButtonIcon(button, iconName, fallbackText = '') {
     return;
   }
   button.textContent = fallbackText;
+}
+
+function setEditButtonIcon(button, label = 'Edit') {
+  if (!button) return;
+  setModalButtonIcon(button, 'edit-3', '✎');
+  button.setAttribute('aria-label', label);
+  button.title = label;
+}
+
+function getToastRoot() {
+  if (!toastRoot || !document.body.contains(toastRoot)) {
+    toastRoot = document.getElementById('toastRoot');
+  }
+  if (!toastRoot) {
+    toastRoot = document.createElement('div');
+    toastRoot.id = 'toastRoot';
+    toastRoot.className = 'toast-root';
+    document.body.appendChild(toastRoot);
+  }
+  return toastRoot;
+}
+
+function showToast(message, options = {}) {
+  if (!message) return;
+  const root = getToastRoot();
+  if (!root) return;
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  root.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  const duration = options.duration || 2200;
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 220);
+  }, duration);
 }
 
 function closeModal() {
@@ -2307,6 +2516,230 @@ function openModal({ title = '', render }) {
       activeModalCleanup = cleanup;
     }
   }
+}
+
+function openHqEditor() {
+  if (!modalRoot || !briefHqValue) return;
+  const current = briefHqValue.textContent || '';
+  openModal({
+    title: 'Edit headquarters',
+    render: ({ body, footer, close }) => {
+      const label = document.createElement('label');
+      label.textContent = 'Headquarters';
+      label.htmlFor = 'hqEditInput';
+      const input = document.createElement('input');
+      input.id = 'hqEditInput';
+      input.type = 'text';
+      input.value = current === 'Headquarters not generated yet.' ? '' : current;
+      input.style.width = '100%';
+      input.style.marginTop = '8px';
+      body.appendChild(label);
+      body.appendChild(input);
+
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'primary';
+      save.textContent = 'Save';
+      save.addEventListener('click', () => {
+        const next = input.value.trim();
+        if (!activeBriefData) activeBriefData = createEmptyBriefData();
+        const manual = ensureManualEdits();
+        manual.overview.hq = true;
+        mergeBriefData({ hq_location: next || 'Not provided' }, { forceManual: true });
+        renderBriefFromState();
+        persistRevisionToHistory();
+        close();
+      });
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'ghost';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', close);
+
+      footer.appendChild(cancel);
+      footer.appendChild(save);
+      input.focus();
+    },
+  });
+}
+
+function openRichTextModal({ title, initialValue = '', subjectLabel, initialSubject = '', onSave }) {
+  openModal({
+    title,
+    render: ({ body, footer, close }) => {
+      const supportsEditor = !!(window.toastui && window.toastui.Editor);
+      let editor = null;
+      const subjectWrap = document.createElement('div');
+      subjectWrap.style.display = 'flex';
+      subjectWrap.style.flexDirection = 'column';
+      subjectWrap.style.gap = '6px';
+      subjectWrap.style.marginBottom = '12px';
+
+      const subjectText = document.createElement('label');
+      subjectText.textContent = subjectLabel || 'Subject';
+      subjectText.htmlFor = 'richEditorSubject';
+      const subjectInput = document.createElement('input');
+      subjectInput.id = 'richEditorSubject';
+      subjectInput.type = 'text';
+      subjectInput.value = initialSubject || '';
+      subjectInput.style.width = '100%';
+      subjectWrap.appendChild(subjectText);
+      subjectWrap.appendChild(subjectInput);
+      body.appendChild(subjectWrap);
+
+      let contentGetter = () => initialValue || '';
+      if (supportsEditor) {
+        const editorEl = document.createElement('div');
+        body.appendChild(editorEl);
+        editor = new window.toastui.Editor({
+          el: editorEl,
+          height: '420px',
+          initialEditType: 'wysiwyg',
+          hideModeSwitch: true,
+          initialValue: initialValue || '',
+        });
+        contentGetter = () => editor.getMarkdown();
+      } else {
+        const fallback = document.createElement('textarea');
+        fallback.value = initialValue || '';
+        fallback.rows = 14;
+        fallback.style.width = '100%';
+        body.appendChild(fallback);
+        contentGetter = () => fallback.value;
+      }
+
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'primary';
+      save.textContent = 'Save';
+      save.addEventListener('click', () => {
+        const subject = subjectInput.value.trim();
+        const markdown = contentGetter();
+        if (typeof onSave === 'function') {
+          onSave({ subject, markdown, close });
+        }
+      });
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'ghost';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', close);
+
+      footer.appendChild(cancel);
+      footer.appendChild(save);
+
+      const handleShortcut = (evt) => {
+        const isMeta = navigator.platform.toUpperCase().includes('MAC') ? evt.metaKey : evt.ctrlKey;
+        if (evt.key === 's' && isMeta) {
+          evt.preventDefault();
+          save.click();
+        }
+        if (evt.key === 'Escape') {
+          close();
+        }
+      };
+      window.addEventListener('keydown', handleShortcut);
+
+      return () => {
+        window.removeEventListener('keydown', handleShortcut);
+        editor?.destroy?.();
+      };
+    },
+  });
+}
+
+function openEmailEditor() {
+  if (selectedPersonaIndex < 0) return;
+  const personaIdx = selectedPersonaIndex;
+  const draft = personaEmailVersions?.[personaIdx]?.versions?.[personaEmailVersions[personaIdx].activeIndex || 0]
+    || personaEmailDrafts?.[personaIdx]
+    || {};
+  const initialSubject = typeof draft.subject === 'string' ? draft.subject : '';
+  const initialBody = typeof draft.body === 'string' ? draft.body : formatEmailDraftText(draft) || '';
+
+  openRichTextModal({
+    title: 'Edit email',
+    subjectLabel: 'Subject',
+    initialSubject,
+    initialValue: initialBody,
+    onSave: ({ subject, markdown, close }) => {
+      applyEmailEdit(personaIdx, subject, markdown);
+      close();
+    },
+  });
+}
+
+function openTelePitchEditor() {
+  const personaIdx = selectedPersonaIndex >= 0 ? selectedPersonaIndex : 0;
+  const hasPitches = Array.isArray(activeBriefData?.telephonicPitches) && activeBriefData.telephonicPitches.length > 0;
+  const hasPersonas = Array.isArray(activeBriefData?.personas) && activeBriefData.personas.length > 0;
+  if (!hasPitches && !hasPersonas) return;
+  const draft = telephonicPitchVersions?.[personaIdx]?.versions?.[telephonicPitchVersions[personaIdx].activeIndex || 0]
+    || activeBriefData?.telephonicPitches?.[personaIdx]
+    || {};
+  const initialContent = formatTelephonicPitchText(draft) || '';
+
+  openModal({
+    title: 'Edit telephonic pitch',
+    render: ({ body, footer, close }) => {
+      let editor = null;
+      let getValue = () => initialContent;
+      if (window.toastui?.Editor) {
+        const editorEl = document.createElement('div');
+        body.appendChild(editorEl);
+        editor = new window.toastui.Editor({
+          el: editorEl,
+          height: '380px',
+          initialEditType: 'wysiwyg',
+          hideModeSwitch: true,
+          initialValue: initialContent,
+        });
+        getValue = () => editor.getMarkdown();
+      } else {
+        const ta = document.createElement('textarea');
+        ta.rows = 12;
+        ta.style.width = '100%';
+        ta.value = initialContent;
+        body.appendChild(ta);
+        getValue = () => ta.value;
+      }
+
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'primary';
+      save.textContent = 'Save';
+      save.addEventListener('click', () => {
+        applyTelePitchEdit(personaIdx, getValue());
+        close();
+      });
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'ghost';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', close);
+
+      footer.appendChild(cancel);
+      footer.appendChild(save);
+
+      const handleShortcut = (evt) => {
+        const isMeta = navigator.platform.toUpperCase().includes('MAC') ? evt.metaKey : evt.ctrlKey;
+        if (evt.key === 's' && isMeta) {
+          evt.preventDefault();
+          save.click();
+        }
+        if (evt.key === 'Escape') close();
+      };
+      window.addEventListener('keydown', handleShortcut);
+
+      return () => {
+        window.removeEventListener('keydown', handleShortcut);
+        editor?.destroy?.();
+      };
+    },
+  });
 }
 
 function openDocPickerModal(mode) {
@@ -4547,6 +4980,105 @@ function renderExportModal(context) {
   renderExportFlowModal(context);
 }
 
+function openPersonaEditor(idx) {
+  if (!activeBriefData) activeBriefData = createEmptyBriefData();
+  const personas = Array.isArray(activeBriefData.personas) ? activeBriefData.personas : [];
+  const persona = personas[idx] || {};
+  openModal({
+    title: `Edit persona ${idx + 1}`,
+    render: ({ body, footer, close }) => {
+      const fields = [
+        { key: 'name', label: 'Name', value: persona.name || persona.personaName || '' },
+        { key: 'designation', label: 'Title / Designation', value: persona.designation || persona.personaDesignation || '' },
+        { key: 'department', label: 'Department', value: persona.department || persona.personaDepartment || '' },
+      ];
+
+      const inputs = {};
+      fields.forEach((field) => {
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.gap = '6px';
+        wrap.style.marginBottom = '12px';
+        const label = document.createElement('label');
+        label.textContent = field.label;
+        label.htmlFor = `persona-${field.key}`;
+        const input = document.createElement('input');
+        input.id = `persona-${field.key}`;
+        input.type = 'text';
+        input.value = field.value;
+        input.style.width = '100%';
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        body.appendChild(wrap);
+        inputs[field.key] = input;
+      });
+
+      const statusEl = document.createElement('div');
+      statusEl.className = 'modal-helper';
+      statusEl.style.minHeight = '20px';
+      body.appendChild(statusEl);
+
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'primary';
+      save.textContent = 'Save';
+      const saveAndUpdate = document.createElement('button');
+      saveAndUpdate.type = 'button';
+      saveAndUpdate.className = 'primary';
+      saveAndUpdate.textContent = 'Save and update pitches';
+      saveAndUpdate.style.marginLeft = '8px';
+
+      const setLoading = (loading, message = '') => {
+        save.disabled = loading;
+        saveAndUpdate.disabled = loading;
+        statusEl.textContent = message;
+        statusEl.style.color = loading ? '' : '#b91c1c';
+      };
+
+      const handleSave = async (triggerRevisions) => {
+        const nextPersona = { ...persona };
+        nextPersona.name = inputs.name.value.trim();
+        nextPersona.designation = inputs.designation.value.trim();
+        nextPersona.department = inputs.department.value.trim();
+        personas[idx] = nextPersona;
+        const manual = ensureManualEdits();
+        manual.personas[idx] = true;
+        activeBriefData.personas = personas;
+        renderPersonaSectionsFromState();
+        persistRevisionToHistory();
+
+        if (!triggerRevisions) {
+          close();
+          return;
+        }
+
+        setLoading(true, 'Revising email and pitch...');
+        try {
+          await revisePersonaOutputs(idx);
+          setLoading(false, '');
+          close();
+        } catch (err) {
+          setLoading(false, err?.message || 'Revision failed.');
+        }
+      };
+
+      save.addEventListener('click', () => handleSave(true));
+      saveAndUpdate.addEventListener('click', () => handleSave(true));
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'ghost';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', close);
+
+      footer.appendChild(cancel);
+      footer.appendChild(save);
+      footer.appendChild(saveAndUpdate);
+    },
+  });
+}
+
 function clearAndRenderPersonas(personas) {
   while (personasDiv.firstChild) personasDiv.removeChild(personasDiv.firstChild);
 
@@ -4562,9 +5094,17 @@ function clearAndRenderPersonas(personas) {
     wrapper.className = 'persona';
 
     const title = document.createElement('div');
+    title.className = 'editable-section';
     const nameEl = document.createElement('strong');
     nameEl.textContent = formatPersonaLabel(p, idx);
     title.appendChild(nameEl);
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'inline-edit-btn';
+    setEditButtonIcon(editBtn, `Edit persona ${idx + 1}`);
+    editBtn.style.marginLeft = '8px';
+    editBtn.addEventListener('click', () => openPersonaEditor(idx));
+    title.appendChild(editBtn);
     wrapper.appendChild(title);
 
     const rawLink = p.zoominfo_link || p.zoomInfo || p.zoominfo || p.zoom || '';
@@ -4738,7 +5278,8 @@ function markdownToHtml(md = '') {
 
   const flushParagraph = () => {
     if (!pendingParagraph.length) return;
-    html.push(`<p>${formatInlineMarkdown(pendingParagraph.join(' '))}</p>`);
+    const formatted = pendingParagraph.map((line) => formatInlineMarkdown(line));
+    html.push(`<p>${formatted.join('<br>')}</p>`);
     pendingParagraph = [];
   };
 
@@ -4947,6 +5488,9 @@ function renderPersonaEmailDrafts(personasData = [], personaEmailsData = [], tel
   }
 
   updateRevisionButtonsState();
+  if (editEmailDraftBtn) editEmailDraftBtn.disabled = !hasDrafts;
+  const hasPitches = Array.isArray(activeBriefData?.telephonicPitches) && activeBriefData.telephonicPitches.length > 0;
+  if (editTelePitchBtn) editTelePitchBtn.disabled = !hasPitches && !hasDrafts;
 }
 
 function renderEmailVersionControls() {
@@ -5152,6 +5696,8 @@ async function persistRevisionToHistory() {
         telephonicPitches: Array.isArray(activeBriefData.telephonicPitches) ? activeBriefData.telephonicPitches : [],
         personaEmailVersions: Array.isArray(personaEmailVersions) ? personaEmailVersions : [],
         telephonicPitchVersions: Array.isArray(telephonicPitchVersions) ? telephonicPitchVersions : [],
+        personas: Array.isArray(activeBriefData.personas) ? activeBriefData.personas : [],
+        hq_location: activeBriefData.hq_location || '',
         personaEmailVersionIndexes: Array.isArray(personaEmailVersions)
           ? personaEmailVersions.map((v) => {
             const idx = clampIndex(v.activeIndex || 0, Array.isArray(v.versions) ? v.versions : []);
@@ -5164,6 +5710,7 @@ async function persistRevisionToHistory() {
             return idx < 0 ? 0 : idx;
           })
           : [],
+        manualEdits: activeBriefData.manualEdits || {},
       },
     });
   } catch (err) {

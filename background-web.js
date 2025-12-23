@@ -2110,6 +2110,7 @@ async function saveResearchHistoryEntry(request, result) {
           : (Array.isArray(result.telephonicPitchVersions)
               ? result.telephonicPitchVersions.map((v) => v.activeIndex || 0)
               : []),
+        manualEdits: result.manualEdits || {},
         email: result.email || {},
         overview_error: result.overview_error || "",
         persona_error: result.persona_error || "",

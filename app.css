@@ -1884,6 +1884,7 @@ h3, h4 {
     transition: opacity 160ms ease, transform 160ms ease;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     font-weight: 600;
     font-size: 13px;

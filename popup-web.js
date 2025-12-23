@@ -5278,7 +5278,8 @@ function markdownToHtml(md = '') {
 
   const flushParagraph = () => {
     if (!pendingParagraph.length) return;
-    html.push(`<p>${formatInlineMarkdown(pendingParagraph.join(' '))}</p>`);
+    const formatted = pendingParagraph.map((line) => formatInlineMarkdown(line));
+    html.push(`<p>${formatted.join('<br>')}</p>`);
     pendingParagraph = [];
   };
 

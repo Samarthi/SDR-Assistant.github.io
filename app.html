@@ -95,6 +95,66 @@
             <div class="brief-section-header">
               <p class="section-desc">Generate company briefs with personas and outreach tailored to your product context.</p>
             </div>
+            <div id="briefCommandBar" class="brief-command-bar" hidden aria-label="Brief command bar">
+              <div class="brief-command-header">
+                <div class="brief-command-label">Inputs</div>
+                <button
+                  id="briefBarToggle"
+                  class="brief-command-toggle"
+                  type="button"
+                  aria-label="Collapse input bar"
+                  aria-expanded="true"
+                  aria-controls="briefCommandBody"
+                  title="Collapse input bar"
+                >
+                  <span class="sr-only">Toggle input bar</span>
+                  <span class="bar-icon" aria-hidden="true" data-feather="chevron-up"></span>
+                </button>
+              </div>
+              <div id="briefCommandBody" class="brief-command-body">
+                <div class="brief-command-row brief-command-inline">
+                  <button id="briefRegenerate" type="button" class="bar-icon-btn brief-bar-regenerate">
+                    <span class="bar-icon" aria-hidden="true" data-feather="rotate-cw"></span>
+                    <span class="bar-icon-label">Regenerate</span>
+                  </button>
+                  <div class="brief-chip-row brief-chip-row-inline" role="list">
+                    <button id="briefChipCompany" class="brief-chip brief-chip-editable" type="button" role="listitem">
+                      <span class="chip-label">Company</span>
+                      <span class="chip-value" data-brief-chip-company>Not set</span>
+                      <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                      <span class="sr-only">Edit company</span>
+                    </button>
+                    <button id="briefChipLocation" class="brief-chip brief-chip-editable" type="button" role="listitem">
+                      <span class="chip-label">Location</span>
+                      <span class="chip-value" data-brief-chip-location>Not set</span>
+                      <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                      <span class="sr-only">Edit location</span>
+                    </button>
+                    <button id="briefChipProduct" class="brief-chip brief-chip-editable" type="button" role="listitem">
+                      <span class="chip-label">Product</span>
+                      <span class="chip-value" data-brief-chip-product>Not set</span>
+                      <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                      <span class="sr-only">Edit product</span>
+                    </button>
+                    <button id="briefChipDocs" class="brief-chip brief-chip-compact brief-chip-editable" type="button" role="listitem">
+                      <span class="chip-label">Docs</span>
+                      <span class="chip-value" data-brief-chip-docs>0</span>
+                      <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                      <span class="sr-only">Edit docs</span>
+                    </button>
+                    <button id="briefChipSections" class="brief-chip brief-chip-compact brief-chip-editable" type="button" role="listitem">
+                      <span class="chip-label">Sections</span>
+                      <span class="chip-value" data-brief-chip-sections>Default</span>
+                      <span class="chip-edit" aria-hidden="true" data-feather="edit-3"></span>
+                      <span class="sr-only">Edit sections</span>
+                    </button>
+                  </div>
+                  <div class="brief-command-spacer" aria-hidden="true"></div>
+                  <div id="briefBarStatus" class="brief-bar-status" role="status" aria-live="polite"></div>
+                </div>
+              </div>
+            </div>
+            <div id="briefEditDrawer" class="brief-edit-drawer">
             <div id="formPane">
               <div class="form-input-grid">
                 <div class="input-card">
@@ -124,30 +184,44 @@
 
               <div class="actions">
                 <button id="generate">Generate Brief</button>
+                <button id="briefSectionsButton" type="button" class="ghost">Sections</button>
                 <button id="viewDocs">View Docs</button>
               </div>
               <div id="status"></div>
             </div>
+            </div>
             <div id="resultWrapper">
               <div id="result" style="display:none">
-                <h3>Results</h3>
+                <div class="results-header">
+                  <h3>Results</h3>
+                  <div class="results-actions">
+                    <button id="briefSectionsToggle" type="button" class="ghost results-toggle" aria-haspopup="dialog">
+                      Sections
+                    </button>
+                  </div>
+                </div>
                 <div id="brief" class="result-section">
-                  <div id="briefSummarySection" class="brief-summary">
-                    <div class="summary-grid">
-                      <div class="summary-item">
-                        <div class="summary-label">Headquarters</div>
-                        <div id="briefHqValue" class="summary-value">Headquarters not generated yet.</div>
-                      </div>
-                      <div class="summary-item">
-                        <div class="summary-label">Revenue</div>
-                        <div id="briefRevenueValue" class="summary-value">Revenue not generated yet.</div>
-                      </div>
-                      <div class="summary-item">
-                        <div class="summary-label">Industry Sector</div>
-                        <div id="briefIndustryValue" class="summary-value">Industry sector not generated yet.</div>
+                  <div class="brief-module" data-brief-module="overview">
+                    <div id="briefSummarySection" class="brief-summary">
+                      <div class="summary-grid">
+                        <div class="summary-item">
+                          <div class="summary-label">Headquarters</div>
+                          <div id="briefHqValue" class="summary-value">Headquarters not generated yet.</div>
+                        </div>
+                        <div class="summary-item">
+                          <div class="summary-label">Revenue</div>
+                          <div id="briefRevenueValue" class="summary-value">Revenue not generated yet.</div>
+                        </div>
+                        <div class="summary-item">
+                          <div class="summary-label">Industry Sector</div>
+                          <div id="briefIndustryValue" class="summary-value">Industry sector not generated yet.</div>
+                        </div>
                       </div>
                     </div>
-                    <div class="top-news-section">
+                    <div id="legacyBriefContainer" class="legacy-brief" hidden></div>
+                  </div>
+                  <div class="brief-module" data-brief-module="topNews">
+                    <div id="topNewsSection" class="top-news-section">
                       <div class="top-news-header">
                         <h4>Top News</h4>
                         <span id="topNewsHint" class="section-hint"></span>
@@ -157,10 +231,12 @@
                       </ul>
                     </div>
                   </div>
-                  <div id="legacyBriefContainer" class="legacy-brief" hidden></div>
                 </div>
-                <h4>Personas</h4><div id="personas"></div>
-                <div id="emailSection" class="result-section">
+                <div class="result-section" data-brief-module="personas">
+                  <h4>Personas</h4>
+                  <div id="personas"></div>
+                </div>
+                <div id="emailSection" class="result-section" data-brief-module="emails">
                   <div class="emailHeader">
                     <div class="emailHeaderLeft">
                       <h4>Generated Emails</h4>
@@ -176,22 +252,22 @@
                     <button id="reviseEmailPersona" type="button" class="ghost">Rewrite this email</button>
                     <button id="reviseEmailAll" type="button" class="ghost">Rewrite all emails</button>
                   </div>
-                  <div id="telePitchSection" class="result-section">
-                    <div class="telePitchHeader">
-                      <div class="telePitchHeaderLeft">
-                        <h4>Telephonic Pitch</h4>
-                      </div>
-                      <div class="telePitchActions">
-                        <span class="telePitchHint">Updates with persona selection.</span>
-                      </div>
+                </div>
+                <div id="telePitchSection" class="result-section" data-brief-module="telePitch">
+                  <div class="telePitchHeader">
+                    <div class="telePitchHeaderLeft">
+                      <h4>Telephonic Pitch</h4>
                     </div>
-                    <div id="telePersonaTabs" role="tablist" aria-label="Persona telephonic pitch drafts"></div>
-                    <pre id="telePitchOut" class="outputBox">No telephonic pitch generated yet.</pre>
-                    <div id="pitchVersionControls" class="versionControls versionControls-inline" aria-live="polite"></div>
-                    <div class="revisionActionRow">
-                      <button id="revisePitchPersona" type="button" class="ghost">Rewrite this pitch</button>
-                      <button id="revisePitchAll" type="button" class="ghost">Rewrite all pitches</button>
+                    <div class="telePitchActions">
+                      <span class="telePitchHint">Updates with persona selection.</span>
                     </div>
+                  </div>
+                  <div id="telePersonaTabs" role="tablist" aria-label="Persona telephonic pitch drafts"></div>
+                  <pre id="telePitchOut" class="outputBox">No telephonic pitch generated yet.</pre>
+                  <div id="pitchVersionControls" class="versionControls versionControls-inline" aria-live="polite"></div>
+                  <div class="revisionActionRow">
+                    <button id="revisePitchPersona" type="button" class="ghost">Rewrite this pitch</button>
+                    <button id="revisePitchAll" type="button" class="ghost">Rewrite all pitches</button>
                   </div>
                 </div>
               </div>

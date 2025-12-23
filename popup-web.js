@@ -8,11 +8,14 @@ const apiKeyInput = document.getElementById('apiKey');
 const generateBtn = document.getElementById('generate');
 const status = document.getElementById('status');
 const resultDiv = document.getElementById('result');
+const briefSectionsToggle = document.getElementById('briefSectionsToggle');
+const briefSectionsButton = document.getElementById('briefSectionsButton');
 const briefDiv = document.getElementById('brief');
 const briefSummarySection = document.getElementById('briefSummarySection');
 const briefHqValue = document.getElementById('briefHqValue');
 const briefRevenueValue = document.getElementById('briefRevenueValue');
 const briefIndustryValue = document.getElementById('briefIndustryValue');
+const topNewsSection = document.getElementById('topNewsSection');
 const topNewsList = document.getElementById('topNewsList');
 const topNewsHint = document.getElementById('topNewsHint');
 const legacyBriefContainer = document.getElementById('legacyBriefContainer');
@@ -76,6 +79,21 @@ const targetDocInput = document.getElementById('targetDocInput');
 const targetSectorsInput = document.getElementById('targetSectorsInput');
 const targetSectorsChips = document.getElementById('targetSectorsChips');
 const briefFormPane = document.getElementById('formPane');
+const briefCommandBar = document.getElementById('briefCommandBar');
+const briefCommandBody = document.getElementById('briefCommandBody');
+const briefBarToggle = document.getElementById('briefBarToggle');
+const briefBarStatus = document.getElementById('briefBarStatus');
+const briefChipCompany = document.getElementById('briefChipCompany');
+const briefChipLocation = document.getElementById('briefChipLocation');
+const briefChipProduct = document.getElementById('briefChipProduct');
+const briefChipDocs = document.getElementById('briefChipDocs');
+const briefChipSections = document.getElementById('briefChipSections');
+const briefEditToggle = document.getElementById('briefEditToggle');
+const briefRegenerateBtn = document.getElementById('briefRegenerate');
+const briefVersionPill = document.getElementById('briefVersionPill');
+const briefAutosavePill = document.getElementById('briefAutosavePill');
+const briefEditDrawer = document.getElementById('briefEditDrawer');
+const briefVersionSelect = document.getElementById('briefVersionSelect');
 const targetLocationInput = document.getElementById('targetLocation');
 const targetStatusEl = document.getElementById('targetStatus');
 const targetResultsSection = document.getElementById('targetResults');
@@ -85,6 +103,7 @@ const briefDocPickerBtn = document.getElementById('briefDocPicker');
 const targetDocPickerBtn = document.getElementById('targetDocPicker');
 const briefDocChips = document.getElementById('briefDocChips');
 const targetDocChips = document.getElementById('targetDocChips');
+const targetedBriefView = document.querySelector('.mode-view[data-mode-view="targetedBrief"]');
 
 const EXPORT_TEMPLATE_STORAGE_KEY = 'exportTemplate';
 const EXPORT_TEMPLATE_DRAFT_STORAGE_KEY = 'exportTemplateDraft';
@@ -119,8 +138,68 @@ const ThemePreference = {
   DARK: 'dark',
 };
 const THEME_PREFERENCE_STORAGE_KEY = 'themePreference';
+const BRIEF_MODULES_STORAGE_KEY = 'briefModules';
+const BriefModule = {
+  OVERVIEW: 'overview',
+  TOP_NEWS: 'topNews',
+  PERSONAS: 'personas',
+  EMAILS: 'emails',
+  TELE_PITCH: 'telePitch',
+};
+const BRIEF_MODULES = [
+  {
+    id: BriefModule.OVERVIEW,
+    label: 'Company overview',
+    description: 'HQ, revenue, and industry sector',
+  },
+  {
+    id: BriefModule.TOP_NEWS,
+    label: 'Top news',
+    description: 'Recent headlines and summaries',
+  },
+  {
+    id: BriefModule.PERSONAS,
+    label: 'Personas',
+    description: 'Buyer personas and search links',
+  },
+  {
+    id: BriefModule.EMAILS,
+    label: 'Generated emails',
+    description: 'Email drafts per persona',
+    dependsOn: [BriefModule.PERSONAS],
+  },
+  {
+    id: BriefModule.TELE_PITCH,
+    label: 'Telephonic pitch',
+    description: 'Call scripts per persona',
+    dependsOn: [BriefModule.PERSONAS],
+  },
+];
+const BRIEF_MODULE_ICONS = {
+  [BriefModule.OVERVIEW]:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="8" height="16" rx="2"></rect><rect x="13" y="4" width="8" height="9" rx="2"></rect><path d="M13 15h8M13 19h4"></path></svg>',
+  [BriefModule.TOP_NEWS]:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5z"></path><path d="M16 3v2"></path><path d="M8 9h10"></path><path d="M8 13h8M8 17h6"></path></svg>',
+  [BriefModule.PERSONAS]:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>',
+  [BriefModule.EMAILS]:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"></path><path d="m22 7-10 7L2 7"></path></svg>',
+  [BriefModule.TELE_PITCH]:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.9.35 1.78.69 2.62a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.46-1.26a2 2 0 0 1 2.11-.45c.84.34 1.72.57 2.62.69a2 2 0 0 1 1.72 2.03z"></path></svg>',
+};
 const systemThemeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
+let currentBriefRequest = {
+  company: '',
+  location: '',
+  product: '',
+  docs: [],
+  modules: [],
+};
+let briefVersionCounter = 0;
+let briefVersions = [];
+let briefUiMode = 'form';
+let briefBarCollapsed = false;
 let historyEntries = [];
 let currentHistoryId = null;
 let targetHistoryEntries = [];
@@ -157,6 +236,11 @@ let cachedGroqKey = '';
 let cachedLlmProvider = LLMProvider.GEMINI;
 let cachedLlmModel = DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
 let cachedPitchingCompany = '';
+let briefModuleConfig = null;
+let activeBriefModules = null;
+let briefModuleOverride = null;
+let briefSectionsListActive = null;
+let briefSectionsListActiveHandler = null;
 
 function debounce(fn, wait = 150) {
   let timeoutId = null;
@@ -173,6 +257,276 @@ function debounce(fn, wait = 150) {
       }
     }, wait);
   };
+}
+
+function getDefaultBriefModules() {
+  return BRIEF_MODULES.reduce((acc, module) => {
+    acc[module.id] = true;
+    return acc;
+  }, {});
+}
+
+function normalizeBriefModules(value) {
+  const defaults = getDefaultBriefModules();
+  if (!value || typeof value !== 'object') {
+    return { ...defaults };
+  }
+  const next = { ...defaults };
+  Object.keys(defaults).forEach((key) => {
+    if (typeof value[key] === 'boolean') {
+      next[key] = value[key];
+    }
+  });
+  return next;
+}
+
+function resolveBriefModules(value) {
+  const next = normalizeBriefModules(value);
+  BRIEF_MODULES.forEach((module) => {
+    if (next[module.id] && Array.isArray(module.dependsOn)) {
+      module.dependsOn.forEach((dep) => {
+        next[dep] = true;
+      });
+    }
+  });
+  return next;
+}
+
+function getEffectiveBriefModules() {
+  return resolveBriefModules(briefModuleOverride || briefModuleConfig || null);
+}
+
+function getBriefModuleDefinition(id) {
+  return BRIEF_MODULES.find((module) => module.id === id);
+}
+
+function computeBriefRequiredBy(modules) {
+  const requiredBy = {};
+  BRIEF_MODULES.forEach((module) => {
+    if (modules[module.id] && Array.isArray(module.dependsOn)) {
+      module.dependsOn.forEach((dep) => {
+        if (!requiredBy[dep]) requiredBy[dep] = [];
+        requiredBy[dep].push(module.id);
+      });
+    }
+  });
+  return requiredBy;
+}
+
+function renderBriefModuleControls(modules, container, options = {}) {
+  const host = container || briefSectionsListActive;
+  if (!host) return;
+  host.innerHTML = '';
+  const resolved = resolveBriefModules(modules);
+  const requiredBy = computeBriefRequiredBy(resolved);
+  const onToggle = typeof options.onToggle === 'function'
+    ? options.onToggle
+    : (briefSectionsListActive === host && typeof briefSectionsListActiveHandler === 'function'
+      ? briefSectionsListActiveHandler
+      : handleBriefModuleToggle);
+
+  BRIEF_MODULES.forEach((module) => {
+    const wrapper = document.createElement('label');
+    wrapper.className = 'brief-module-option';
+    const isRequired = Array.isArray(requiredBy[module.id]) && requiredBy[module.id].length > 0;
+    const isChecked = !!resolved[module.id];
+    if (isRequired) wrapper.classList.add('is-required');
+    if (isChecked) wrapper.classList.add('is-active');
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.dataset.moduleId = module.id;
+    checkbox.checked = isChecked;
+    checkbox.disabled = isRequired;
+    checkbox.className = 'visually-hidden';
+    checkbox.addEventListener('change', (evt) => {
+      wrapper.classList.toggle('is-active', evt.target.checked);
+      onToggle(module.id, evt.target.checked);
+    });
+
+    const icon = document.createElement('div');
+    icon.className = 'brief-module-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = BRIEF_MODULE_ICONS[module.id] || BRIEF_MODULE_ICONS[BriefModule.OVERVIEW];
+
+    const copy = document.createElement('div');
+    copy.className = 'brief-module-copy';
+    const title = document.createElement('div');
+    title.className = 'brief-module-title';
+    title.textContent = module.label;
+    const desc = document.createElement('div');
+    desc.className = 'brief-module-desc';
+    desc.textContent = module.description;
+    copy.appendChild(title);
+    copy.appendChild(desc);
+
+    if (isRequired) {
+      const required = document.createElement('div');
+      required.className = 'brief-module-required';
+      const labels = requiredBy[module.id]
+        .map((depId) => getBriefModuleDefinition(depId)?.label || depId);
+      required.textContent = `Required for ${labels.join(' and ')}`;
+      copy.appendChild(required);
+    }
+
+    const toggle = document.createElement('div');
+    toggle.className = 'brief-module-toggle';
+    toggle.setAttribute('aria-hidden', 'true');
+
+    wrapper.appendChild(checkbox);
+    wrapper.appendChild(icon);
+    wrapper.appendChild(copy);
+    wrapper.appendChild(toggle);
+    host.appendChild(wrapper);
+  });
+}
+
+function applyBriefModulesToView(modules, options = {}) {
+  const resolved = resolveBriefModules(modules);
+  activeBriefModules = resolved;
+  const containers = document.querySelectorAll('[data-brief-module]');
+  containers.forEach((container) => {
+    const id = container.dataset.briefModule;
+    const isEnabled = id ? !!resolved[id] : true;
+    if (isEnabled) {
+      container.removeAttribute('hidden');
+      container.setAttribute('aria-hidden', 'false');
+    } else {
+      container.setAttribute('hidden', 'hidden');
+      container.setAttribute('aria-hidden', 'true');
+    }
+  });
+  if (options.updateControls !== false) {
+    renderBriefModuleControls(resolved);
+  }
+  return resolved;
+}
+
+function applyEffectiveBriefModulesToView(options = {}) {
+  return applyBriefModulesToView(getEffectiveBriefModules(), options);
+}
+
+function setBriefModulesConfig(nextConfig, options = {}) {
+  const resolved = resolveBriefModules(nextConfig);
+  briefModuleConfig = resolved;
+  if (options.persist !== false) {
+    chrome.storage.local
+      .set({ [BRIEF_MODULES_STORAGE_KEY]: resolved })
+      .catch((err) => console.warn('Failed to save brief module settings', err));
+  }
+  const updateControls = options.updateControls !== false;
+  applyEffectiveBriefModulesToView({ updateControls });
+  return resolved;
+}
+
+function getBriefProgressTotal(modules) {
+  const resolved = resolveBriefModules(modules);
+  return BRIEF_MODULES.reduce((sum, module) => sum + (resolved[module.id] ? 1 : 0), 0);
+}
+
+function setBriefModulesOverride(nextConfig, options = {}) {
+  const resolved = resolveBriefModules(nextConfig);
+  briefModuleOverride = resolved;
+  applyEffectiveBriefModulesToView({ updateControls: options.updateControls !== false });
+  return resolved;
+}
+
+function clearBriefModulesOverride(options = {}) {
+  briefModuleOverride = null;
+  applyEffectiveBriefModulesToView({ updateControls: options.updateControls !== false });
+}
+
+function handleBriefModuleToggle(moduleId, checked) {
+  if (!moduleId) return;
+  const base = briefModuleConfig || activeBriefModules || getDefaultBriefModules();
+  const next = { ...base, [moduleId]: !!checked };
+  setBriefModulesConfig(next);
+}
+
+function openBriefSectionsModal(options = {}) {
+  const mode = options.mode === 'global' ? 'global' : 'override';
+  const isGlobal = mode === 'global';
+  const baseModules = options.baseModules || null;
+  openModal({
+    title: isGlobal ? 'Global brief sections' : 'Brief sections',
+    render: ({ body, footer, close }) => {
+      const panel = document.createElement('div');
+      panel.className = 'brief-sections-panel';
+      const hint = document.createElement('p');
+      hint.className = 'brief-sections-hint';
+      hint.textContent = isGlobal
+        ? 'Set the default sections for new briefs.'
+        : 'Override global defaults for this brief. Disabled sections will not run.';
+      panel.appendChild(hint);
+
+      const list = document.createElement('div');
+      list.className = 'brief-sections-list';
+      panel.appendChild(list);
+      if (!isGlobal) {
+        const status = document.createElement('div');
+        status.className = 'brief-sections-status';
+        status.textContent = briefModuleOverride ? 'Override active for this brief' : 'Using global defaults';
+        panel.insertBefore(status, list);
+      }
+      body.appendChild(panel);
+
+      briefSectionsListActive = list;
+      const resolveBase = () => (isGlobal
+        ? (briefModuleConfig || getDefaultBriefModules())
+        : (briefModuleOverride || baseModules || briefModuleConfig || getDefaultBriefModules()));
+      const applyAndRender = (nextConfig) => {
+        if (isGlobal) {
+          const resolved = setBriefModulesConfig(nextConfig, { updateControls: false });
+          renderBriefModuleControls(resolved, list, { onToggle: handleToggle });
+        } else {
+          const resolved = setBriefModulesOverride(nextConfig, { updateControls: false });
+          renderBriefModuleControls(resolved, list, { onToggle: handleToggle });
+        }
+      };
+      const handleToggle = (moduleId, checked) => {
+        const base = resolveBase();
+        const next = { ...base, [moduleId]: !!checked };
+        applyAndRender(next);
+        if (!isGlobal) {
+          const status = panel.querySelector('.brief-sections-status');
+          if (status) {
+            status.textContent = 'Override active for this brief';
+          }
+        }
+      };
+      briefSectionsListActiveHandler = handleToggle;
+      renderBriefModuleControls(resolveBase(), list, { onToggle: handleToggle });
+
+      if (!isGlobal) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.textContent = 'Use global defaults';
+        clearBtn.addEventListener('click', () => {
+          clearBriefModulesOverride({ updateControls: false });
+          renderBriefModuleControls(briefModuleConfig || getDefaultBriefModules(), list, { onToggle: handleToggle });
+          const status = panel.querySelector('.brief-sections-status');
+          if (status) {
+            status.textContent = 'Using global defaults';
+          }
+        });
+        footer.appendChild(clearBtn);
+      }
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = 'Done';
+      closeBtn.classList.add('primary');
+      closeBtn.addEventListener('click', () => close());
+      footer.appendChild(closeBtn);
+
+      return () => {
+        if (briefSectionsListActive === list) {
+          briefSectionsListActive = null;
+          briefSectionsListActiveHandler = null;
+        }
+      };
+    },
+  });
 }
 
 function normalizeLlmProvider(provider, hasGeminiKey, hasGroqKey) {
@@ -310,6 +664,19 @@ const llmSettingsLoadPromise = chrome.storage.local
     geminiKey: '',
     groqKey: '',
   }));
+const briefModulesLoadPromise = chrome.storage.local
+  .get([BRIEF_MODULES_STORAGE_KEY])
+  .then((data) => {
+    const stored = data && data[BRIEF_MODULES_STORAGE_KEY];
+    briefModuleConfig = resolveBriefModules(stored);
+    applyEffectiveBriefModulesToView({ updateControls: true });
+    return briefModuleConfig;
+  })
+  .catch(() => {
+    briefModuleConfig = resolveBriefModules(null);
+    applyEffectiveBriefModulesToView({ updateControls: true });
+    return briefModuleConfig;
+  });
 const pitchingCompanyLoadPromise = chrome.storage.local
   .get([PITCH_FROM_COMPANY_KEY])
   .then((data) => {
@@ -339,6 +706,9 @@ function setActiveMode(mode) {
   const normalizedMode = validModes.includes(mode) ? mode : Mode.TARGETED_BRIEF;
   const modeChanged = activeMode !== normalizedMode;
   activeMode = normalizedMode;
+  if (normalizedMode === Mode.TARGETED_BRIEF) {
+    setBriefUiMode(briefUiMode || 'form');
+  }
   updateHistorySidebarTitle(normalizedMode);
   updateHistorySearchLabel(normalizedMode);
   if (!modeChanged) {
@@ -642,6 +1012,12 @@ loadStoredDocs().finally(() => {
   renderDocChips(Mode.TARGET_GENERATION);
   updateRevisionButtonsState();
 });
+briefSectionsToggle?.addEventListener('click', () => {
+  openBriefSectionsModal({ mode: 'override', baseModules: activeBriefData?.modules });
+});
+briefSectionsButton?.addEventListener('click', () => {
+  openBriefSectionsModal({ mode: 'override' });
+});
 
 function resetBriefProgress() {
   briefProgressState.runId = null;
@@ -649,9 +1025,238 @@ function resetBriefProgress() {
   briefProgressState.current = 0;
 }
 
+function setBriefEditDrawerCollapsed(collapsed) {
+  if (!briefEditDrawer) return;
+  if (collapsed) {
+    briefEditDrawer.setAttribute('data-collapsed', 'true');
+    briefEditDrawer.hidden = true;
+  } else {
+    briefEditDrawer.removeAttribute('data-collapsed');
+    briefEditDrawer.hidden = false;
+  }
+}
+
+function getActiveBriefStatusEl() {
+  if (briefCommandBar && !briefCommandBar.hidden && briefBarStatus) {
+    return briefBarStatus;
+  }
+  return status;
+}
+
+function setBriefStatusMessage(text = '', { error = false } = {}) {
+  const target = getActiveBriefStatusEl();
+  if (target) {
+    target.innerText = text;
+    target.style.color = error ? '#b91c1c' : '';
+  }
+  if (status && target !== status) {
+    status.innerText = text;
+    status.style.color = error ? '#b91c1c' : '';
+  }
+}
+
+function updateBriefVersionPill() {
+  if (!briefVersionPill) return;
+  if (!briefVersionCounter) {
+    briefVersionPill.hidden = true;
+    return;
+  }
+  briefVersionPill.textContent = `v${briefVersionCounter}`;
+  briefVersionPill.hidden = false;
+}
+
+function updateBriefVersionSelect() {
+  if (!briefVersionSelect) return;
+  const options = ['<option value=\"\">Current run</option>'];
+  briefVersions.forEach((version) => {
+    const label = `${version.id} — ${version.timestamp}`;
+    options.push(`<option value=\"${version.id}\">${label}</option>`);
+  });
+  briefVersionSelect.innerHTML = options.join('');
+}
+
+function updateBriefCommandBarFromRequest(request = currentBriefRequest) {
+  if (!briefCommandBar) return;
+  const req = request || {};
+  const docCount = Array.isArray(req.docs) ? req.docs.length : 0;
+  const modulesCount = Array.isArray(req.modules) ? req.modules.length : 0;
+  const moduleLabel = modulesCount ? `${modulesCount} section${modulesCount === 1 ? '' : 's'}` : 'Default';
+  const assignValue = (el, val) => {
+    if (el) el.textContent = val || 'Not set';
+  };
+  assignValue(briefChipCompany?.querySelector('.chip-value'), req.company);
+  assignValue(briefChipLocation?.querySelector('.chip-value'), req.location);
+  assignValue(briefChipProduct?.querySelector('.chip-value'), req.product);
+  assignValue(briefChipDocs?.querySelector('.chip-value'), String(docCount));
+  assignValue(briefChipSections?.querySelector('.chip-value'), moduleLabel);
+}
+
+function setBriefBarCollapsed(collapsed) {
+  briefBarCollapsed = !!collapsed;
+  if (briefCommandBar) {
+    briefCommandBar.classList.toggle('is-collapsed', briefBarCollapsed);
+  }
+  if (briefCommandBody) {
+    briefCommandBody.hidden = briefBarCollapsed;
+  }
+  if (briefBarToggle) {
+    const label = briefBarCollapsed ? 'Expand input bar' : 'Collapse input bar';
+    briefBarToggle.setAttribute('aria-expanded', briefBarCollapsed ? 'false' : 'true');
+    briefBarToggle.setAttribute('aria-label', label);
+    briefBarToggle.title = label;
+  }
+}
+
+function toggleBriefBarCollapsed() {
+  setBriefBarCollapsed(!briefBarCollapsed);
+}
+
+function showBriefCommandBar(show) {
+  if (!briefCommandBar) return;
+  briefCommandBar.hidden = !show;
+  setBriefBarCollapsed(briefBarCollapsed);
+  if (show) {
+    setBriefEditDrawerCollapsed(true);
+    if (briefEditToggle) briefEditToggle.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function setBriefUiMode(mode) {
+  briefUiMode = mode === 'bar' ? 'bar' : 'form';
+  const isBar = briefUiMode === 'bar';
+  if (targetedBriefView) {
+    targetedBriefView.classList.toggle('brief-ui-bar', isBar);
+    targetedBriefView.classList.toggle('brief-ui-form', !isBar);
+  }
+  if (briefCommandBar) briefCommandBar.hidden = !isBar;
+  setBriefBarCollapsed(briefBarCollapsed);
+  setBriefEditDrawerCollapsed(isBar);
+  if (briefEditToggle) briefEditToggle.setAttribute('aria-expanded', isBar ? 'false' : 'true');
+}
+
+function showBriefForm() {
+  setBriefUiMode('form');
+}
+
+function showBriefBar() {
+  setBriefUiMode('bar');
+}
+
+function toggleBriefEditDrawer() {
+  const formVisible = briefEditDrawer && !briefEditDrawer.hidden;
+  if (formVisible) {
+    showBriefBar();
+  } else {
+    showBriefForm();
+  }
+}
+
+function buildBriefRequestFromForm() {
+  return {
+    company: companyEl?.value?.trim() || '',
+    location: locationEl?.value?.trim() || '',
+    product: productEl?.value?.trim() || '',
+    docs: getSelectedDocObjects(Mode.TARGETED_BRIEF),
+    modules: getEffectiveBriefModules(),
+  };
+}
+
+async function runBriefGeneration(request) {
+  const req = request || {};
+  const company = (req.company || '').trim();
+  const location = (req.location || '').trim();
+  const product = (req.product || '').trim();
+  const modules = Array.isArray(req.modules) && req.modules.length ? req.modules : getEffectiveBriefModules();
+  if (!company || !product) {
+    setBriefStatusMessage('Company and Product required', { error: true });
+    setBriefEditDrawerCollapsed(false);
+    return;
+  }
+  const totalSteps = getBriefProgressTotal(modules);
+  if (!totalSteps) {
+    setBriefStatusMessage('Enable at least one brief section to generate.', { error: true });
+    return;
+  }
+  showBriefBar();
+  currentBriefRequest = { ...req, company, location, product, modules };
+  updateBriefCommandBarFromRequest();
+  const runId = String(Date.now());
+  startBriefProgress(runId, 'Loading docs...', totalSteps);
+  prepareResultShell(modules);
+  currentHistoryId = null;
+
+  try {
+    await loadStoredDocs();
+    let docs = Array.isArray(req.docs) && req.docs.length ? req.docs : getSelectedDocObjects(Mode.TARGETED_BRIEF);
+    if (!docs.length) {
+      try {
+        const resp = await sendMessagePromise({ action: 'getDocsForProduct', product });
+        docs = resp && Array.isArray(resp.docs) ? resp.docs : [];
+        if (docs.length) {
+          setSelectedDocsFromRefs(Mode.TARGETED_BRIEF, docs);
+        }
+      } catch (docErr) {
+        resetBriefProgress();
+        setBriefStatusMessage('Failed to load docs: ' + (docErr?.message || docErr), { error: true });
+        return;
+      }
+    }
+    currentBriefRequest.docs = docs;
+    updateBriefCommandBarFromRequest();
+
+    startBriefProgress(runId, 'Generating brief...', totalSteps);
+    const result = await sendMessagePromise({
+      action: 'generateBrief',
+      company,
+      location,
+      product,
+      docs,
+      runId,
+      modules,
+    });
+    if (!result) {
+      resetBriefProgress();
+      setBriefStatusMessage('Generation failed', { error: true });
+      return;
+    }
+    if (result.error) {
+      resetBriefProgress();
+      setBriefStatusMessage('Error: ' + result.error, { error: true });
+      return;
+    }
+    renderResultView(result);
+    briefVersionCounter += 1;
+    const versionId = `v${briefVersionCounter}`;
+    briefVersions = [
+      { id: versionId, request: { ...currentBriefRequest }, result, timestamp: new Date().toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }) },
+      ...briefVersions.filter((v) => v.id !== versionId),
+    ];
+    updateBriefVersionPill();
+    updateBriefVersionSelect();
+    const overviewError = typeof result.overview_error === 'string' ? result.overview_error.trim() : '';
+    const personaError = typeof result.persona_error === 'string' ? result.persona_error.trim() : '';
+    const teleError = typeof result.telephonicPitchError === 'string' ? result.telephonicPitchError.trim() : '';
+    if (overviewError || personaError || teleError) {
+      const parts = [];
+      if (overviewError) parts.push('Overview: ' + overviewError);
+      if (personaError) parts.push('Personas: ' + personaError);
+      if (teleError) parts.push('Telephonic pitch: ' + teleError);
+      setBriefStatusMessage(parts.join(' | '), { error: true });
+    } else {
+      setBriefStatusMessage('Done.', { error: false });
+    }
+    resetBriefProgress();
+    loadHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
+  } catch (err) {
+    resetBriefProgress();
+    setBriefStatusMessage('Error: ' + (err?.message || err), { error: true });
+  }
+}
+
 function createEmptyBriefData() {
   return {
     brief_html: '',
+    modules: getEffectiveBriefModules(),
     company_name: '',
     revenue_estimate: '',
     industry_sector: '',
@@ -695,6 +1300,7 @@ function mergeBriefData(partial = {}) {
     }
   };
 
+  assign('modules');
   assign('brief_html');
   assign('company_name');
   assign('revenue_estimate');
@@ -885,6 +1491,14 @@ function renderBriefFromState() {
     }
     legacyBriefContainer.hidden = !shouldShowLegacy;
     legacyBriefContainer.innerHTML = shouldShowLegacy ? activeBriefData.brief_html : '';
+    const topNewsModule = topNewsSection?.closest('[data-brief-module="topNews"]');
+    if (topNewsModule) {
+      if (shouldShowLegacy) {
+        topNewsModule.setAttribute('data-legacy-hidden', 'true');
+      } else {
+        topNewsModule.removeAttribute('data-legacy-hidden');
+      }
+    }
   }
 }
 
@@ -920,8 +1534,15 @@ function renderPersonaSectionsFromState() {
   renderPersonaEmailDrafts(personasData, personaEmailsData, telephonicPitchesData, activeBriefData.email);
 }
 
-function prepareResultShell() {
+function prepareResultShell(modules) {
+  const resolvedModules = applyBriefModulesToView(
+    modules || getEffectiveBriefModules(),
+    { updateControls: true },
+  );
+  const topNewsModule = topNewsSection?.closest('[data-brief-module="topNews"]');
+  topNewsModule?.removeAttribute('data-legacy-hidden');
   activeBriefData = createEmptyBriefData();
+  activeBriefData.modules = resolvedModules;
   if (resultDiv) resultDiv.style.display = 'block';
   if (briefSummarySection) briefSummarySection.hidden = false;
   if (briefHqValue) briefHqValue.textContent = 'Locating headquarters...';
@@ -949,18 +1570,23 @@ function prepareResultShell() {
 }
 
 function renderBriefProgress(label = 'Working...') {
-  if (!status) return;
-  status.innerHTML = '';
+  const target = getActiveBriefStatusEl();
+  if (!target) return;
+  target.innerHTML = '';
   const spinner = document.createElement('span');
   spinner.className = 'spinner';
-  status.appendChild(spinner);
+  target.appendChild(spinner);
   const text = document.createElement('span');
   text.style.marginLeft = '8px';
   const total = briefProgressState.total || '?';
   const current = typeof briefProgressState.current === 'number' ? briefProgressState.current : 0;
   text.textContent = `${label} (${current}/${total})`;
-  status.appendChild(text);
-  status.style.color = '';
+  target.appendChild(text);
+  target.style.color = '';
+  if (status && target !== status) {
+    status.innerHTML = target.innerHTML;
+    status.style.color = '';
+  }
 }
 
 function startBriefProgress(runId, initialLabel = 'Starting...', initialTotal = 3) {
@@ -1451,6 +2077,24 @@ function startNewResearch(mode = activeMode || Mode.TARGETED_BRIEF) {
     resetTargetSearch();
     return;
   }
+  currentBriefRequest = { company: '', location: '', product: '', docs: [], modules: [] };
+  briefVersionCounter = 0;
+  briefVersions = [];
+  briefUiMode = 'form';
+  if (briefVersionPill) {
+    briefVersionPill.hidden = true;
+    briefVersionPill.textContent = 'v1';
+  }
+  if (briefVersionSelect) {
+    briefVersionSelect.innerHTML = '<option value="">Current run</option>';
+  }
+  showBriefForm();
+  if (briefBarStatus) {
+    briefBarStatus.innerHTML = '';
+    briefBarStatus.style.color = '';
+  }
+  briefModuleOverride = null;
+  applyEffectiveBriefModulesToView({ updateControls: true });
 
   companyEl && (companyEl.value = '');
   locationEl && (locationEl.value = '');
@@ -1561,8 +2205,8 @@ copyEmailBtn?.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(text);
     if (status) {
-      const personaName = getActivePersonaName();
-      status.innerText = personaName ? `Email for ${personaName} copied to clipboard.` : 'Email copied to clipboard.';
+    const personaLabel = getActivePersonaLabel();
+    status.innerText = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
       status.style.color = '';
     }
   } catch (err) {
@@ -1577,8 +2221,8 @@ copyEmailBtn?.addEventListener('click', async () => {
       const ok = document.execCommand('copy');
       if (ok) {
         if (status) {
-          const personaName = getActivePersonaName();
-          status.innerText = personaName ? `Email for ${personaName} copied to clipboard.` : 'Email copied to clipboard.';
+        const personaLabel = getActivePersonaLabel();
+        status.innerText = personaLabel ? `Email for ${personaLabel} copied to clipboard.` : 'Email copied to clipboard.';
           status.style.color = '';
         }
       } else {
@@ -2615,6 +3259,27 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
   });
   updateThemeChoiceState();
   form.appendChild(themeSection);
+
+  const sectionsSection = document.createElement('div');
+  sectionsSection.className = 'modal-section';
+  const sectionsHeader = document.createElement('h4');
+  sectionsHeader.textContent = 'Brief sections';
+  sectionsSection.appendChild(sectionsHeader);
+  const sectionsHelper = document.createElement('p');
+  sectionsHelper.className = 'modal-helper';
+  sectionsHelper.textContent = 'Set the default sections for new brief generation.';
+  sectionsSection.appendChild(sectionsHelper);
+  const sectionsList = document.createElement('div');
+  sectionsList.className = 'brief-sections-list';
+  sectionsSection.appendChild(sectionsList);
+  const handleSectionToggle = (moduleId, checked) => {
+    const base = briefModuleConfig || getDefaultBriefModules();
+    const next = { ...base, [moduleId]: !!checked };
+    const resolved = setBriefModulesConfig(next, { updateControls: false });
+    renderBriefModuleControls(resolved, sectionsList, { onToggle: handleSectionToggle });
+  };
+  renderBriefModuleControls(briefModuleConfig || getDefaultBriefModules(), sectionsList, { onToggle: handleSectionToggle });
+  form.appendChild(sectionsSection);
 
   const apiSection = document.createElement('div');
   apiSection.className = 'modal-section';
@@ -3892,23 +4557,14 @@ function clearAndRenderPersonas(personas) {
     return;
   }
 
-  personas.forEach(p => {
+  personas.forEach((p, idx) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'persona';
 
     const title = document.createElement('div');
     const nameEl = document.createElement('strong');
-    nameEl.textContent = p.name || '';
+    nameEl.textContent = formatPersonaLabel(p, idx);
     title.appendChild(nameEl);
-
-    if (p.designation) {
-      const des = document.createTextNode(' — ' + p.designation);
-      title.appendChild(des);
-    }
-    if (p.department) {
-      const dept = document.createTextNode(' (' + p.department + ')');
-      title.appendChild(dept);
-    }
     wrapper.appendChild(title);
 
     const rawLink = p.zoominfo_link || p.zoomInfo || p.zoominfo || p.zoom || '';
@@ -4195,11 +4851,7 @@ function buildPersonaTabButton(draft, idx, activeIndex = 0) {
   btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   btn.tabIndex = isActive ? 0 : -1;
 
-  const labelBits = [];
-  const name = draft.personaName && draft.personaName.trim() ? draft.personaName.trim() : `Persona ${idx + 1}`;
-  labelBits.push(name);
-  if (draft.personaDesignation) labelBits.push(draft.personaDesignation);
-  btn.textContent = labelBits.join(' \u2013 ');
+  btn.textContent = formatPersonaLabel(draft, idx);
   return btn;
 }
 
@@ -4229,10 +4881,10 @@ function syncPersonaTabActiveStates(activeIndex) {
   });
 }
 
-function getActivePersonaName() {
+function getActivePersonaLabel() {
   if (selectedPersonaIndex < 0) return '';
   const draft = personaEmailDrafts[selectedPersonaIndex];
-  return draft && draft.personaName ? draft.personaName : '';
+  return draft ? formatPersonaLabel(draft, selectedPersonaIndex) : '';
 }
 
 function activatePersonaTab(index) {
@@ -4441,9 +5093,18 @@ function setPitchVersion(personaIdx, versionIdx) {
 }
 
 function formatPersonaLabel(persona = {}, idx = 0) {
-  const name = persona.name || persona.personaName || persona.persona_name || `Persona ${idx + 1}`;
-  const role = persona.designation || persona.personaDesignation || persona.persona_designation || '';
-  return role ? `${name} (${role})` : name;
+  const role =
+    (typeof persona.designation === 'string' && persona.designation.trim()) ||
+    (typeof persona.personaDesignation === 'string' && persona.personaDesignation.trim()) ||
+    (typeof persona.persona_designation === 'string' && persona.persona_designation.trim()) ||
+    (typeof persona.title === 'string' && persona.title.trim()) ||
+    '';
+  const dept =
+    (typeof persona.department === 'string' && persona.department.trim()) ||
+    (typeof persona.personaDepartment === 'string' && persona.personaDepartment.trim()) ||
+    (typeof persona.persona_department === 'string' && persona.persona_department.trim()) ||
+    '';
+  return role || dept || 'Persona';
 }
 
 function formatRevisionCurrentText(type, indices = []) {
@@ -4920,7 +5581,11 @@ function renderResultView(data = {}) {
   if (!resultDiv || !briefDiv || !emailOut) return;
 
   resultDiv.style.display = 'block';
-  mergeBriefData(data);
+  const resolvedModules = applyBriefModulesToView(
+    data?.modules || briefModuleConfig || null,
+    { updateControls: true },
+  );
+  mergeBriefData({ ...data, modules: resolvedModules });
   renderBriefFromState();
   renderPersonaSectionsFromState();
 
@@ -5223,7 +5888,21 @@ function showHistoryEntry(entry, options = {}) {
   }
 
   if (entry.result) {
+    currentBriefRequest = {
+      company: entry?.request?.company || '',
+      location: entry?.request?.location || '',
+      product: entry?.request?.product || '',
+      docs: entry?.request?.docs || [],
+      modules: entry?.request?.modules || entry?.result?.modules || getEffectiveBriefModules(),
+    };
+    briefVersions = [];
+    briefVersionCounter = 0;
+    updateBriefVersionSelect();
+    updateBriefCommandBarFromRequest();
+    showBriefBar();
     renderResultView(entry.result);
+    briefVersionCounter = Math.max(briefVersionCounter, 1);
+    updateBriefVersionPill();
   }
 
   if (status) {
@@ -5385,73 +6064,8 @@ function loadTargetHistory(options = {}) {
 // ---- End helpers ----
 
 generateBtn?.addEventListener('click', async () => {
-  const company = companyEl.value.trim();
-  const location = locationEl.value.trim();
-  const product = productEl.value.trim();
-  if (!company || !product) {
-    status.innerText = 'Company and Product required';
-    status.style.color = '#b91c1c';
-    return;
-  }
-  const runId = String(Date.now());
-  startBriefProgress(runId, 'Loading docs...');
-  prepareResultShell();
-  currentHistoryId = null;
-
-  try {
-    await loadStoredDocs();
-    let docs = getSelectedDocObjects(Mode.TARGETED_BRIEF);
-    if (!docs.length) {
-      try {
-        const resp = await sendMessagePromise({ action: 'getDocsForProduct', product });
-        docs = resp && Array.isArray(resp.docs) ? resp.docs : [];
-        if (docs.length) {
-          setSelectedDocsFromRefs(Mode.TARGETED_BRIEF, docs);
-        }
-      } catch (docErr) {
-        resetBriefProgress();
-        status.innerText = 'Failed to load docs: ' + (docErr?.message || docErr);
-        status.style.color = '#b91c1c';
-        return;
-      }
-    }
-
-    startBriefProgress(runId, 'Generating brief...', 3);
-    const result = await sendMessagePromise({ action: 'generateBrief', company, location, product, docs, runId });
-    if (!result) {
-      resetBriefProgress();
-      status.innerText = 'Generation failed';
-      status.style.color = '#b91c1c';
-      return;
-    }
-    if (result.error) {
-      resetBriefProgress();
-      status.innerText = 'Error: ' + result.error;
-      status.style.color = '#b91c1c';
-      return;
-    }
-    renderResultView(result);
-    const overviewError = typeof result.overview_error === 'string' ? result.overview_error.trim() : '';
-    const personaError = typeof result.persona_error === 'string' ? result.persona_error.trim() : '';
-    const teleError = typeof result.telephonicPitchError === 'string' ? result.telephonicPitchError.trim() : '';
-    if (overviewError || personaError || teleError) {
-      const parts = [];
-      if (overviewError) parts.push('Overview: ' + overviewError);
-      if (personaError) parts.push('Personas: ' + personaError);
-      if (teleError) parts.push('Telephonic pitch: ' + teleError);
-      status.innerText = parts.join(' | ');
-      status.style.color = '#b91c1c';
-    } else {
-      status.innerText = 'Done.';
-      status.style.color = '';
-    }
-    resetBriefProgress();
-    loadHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
-  } catch (err) {
-    resetBriefProgress();
-    status.innerText = 'Error: ' + (err?.message || err);
-    status.style.color = '#b91c1c';
-  }
+  const request = buildBriefRequestFromForm();
+  await runBriefGeneration(request);
 });
 
 historyList?.addEventListener('click', (evt) => {
@@ -5574,4 +6188,47 @@ document.addEventListener('click', (evt) => {
   if (withinMenu) return;
   closeAllHistoryMenus(historyList);
   closeAllHistoryMenus(targetHistoryList);
+});
+
+briefBarToggle?.addEventListener('click', () => {
+  toggleBriefBarCollapsed();
+});
+
+briefChipCompany?.addEventListener('click', () => showBriefForm());
+briefChipLocation?.addEventListener('click', () => showBriefForm());
+briefChipProduct?.addEventListener('click', () => showBriefForm());
+briefChipDocs?.addEventListener('click', () => {
+  showBriefForm();
+  if (briefDocPickerBtn) {
+    briefDocPickerBtn.click();
+  }
+});
+briefChipSections?.addEventListener('click', () => {
+  showBriefForm();
+  openBriefSectionsModal({ mode: 'override' });
+});
+
+briefRegenerateBtn?.addEventListener('click', async () => {
+  if (!currentBriefRequest.company || !currentBriefRequest.product) {
+    setBriefStatusMessage('Set company and product before regenerating.', { error: true });
+    toggleBriefEditDrawer();
+    return;
+  }
+  await runBriefGeneration(currentBriefRequest);
+});
+
+briefVersionSelect?.addEventListener('change', (evt) => {
+  const { value } = evt.target;
+  if (!value) return;
+  const version = briefVersions.find((v) => v.id === value);
+  if (!version) return;
+  currentBriefRequest = { ...(version.request || {}) };
+  updateBriefCommandBarFromRequest();
+  showBriefBar();
+  renderResultView(version.result || {});
+  setBriefStatusMessage(`Loaded ${value}.`, { error: false });
+  if (briefVersionPill) {
+    briefVersionPill.textContent = value;
+    briefVersionPill.hidden = false;
+  }
 });

@@ -43,6 +43,7 @@ const {
   parseMarkdownTable,
   toLinkedInPeopleSearchUrl,
   buildLinkedInKeywordFallback,
+  buildZoomInfoSearchLink,
 } = require(path.join(__dirname, "..", "background-web.js"));
 
 const tests = [];
@@ -246,14 +247,18 @@ test("callLlmWithRetry uses stored Groq settings", async () => {
 
 test("parsePersonasFromMarkdown extracts persona list", () => {
   const personas = parsePersonasFromMarkdown(`- Name=Alice Doe; Title=VP Marketing; Department=Marketing; SearchLink=https://example.com
-- Name=Bob Roe; Title=CTO; Department=Engineering; SearchLink=https://example.org; LinkedInKeywords=CTO ACME`, "ACME");
+- Name=Bob Roe; Title=CTO; Department=Engineering; SearchLink=https://example.org; LinkedInKeywords=ACME "CTO" OR "Chief Technology Officer"`, "ACME");
   assert.strictEqual(personas.length, 2);
   assert.strictEqual(personas[0].name, "Alice Doe");
   assert.strictEqual(personas[0].designation, "VP Marketing");
   assert.strictEqual(personas[1].department, "Engineering");
-  assert.strictEqual(personas[1].linkedin_keywords, "CTO ACME");
+  assert.strictEqual(personas[1].linkedin_keywords, "ACME CTO");
   assert.ok(personas[1].linkedin_search_url.includes("linkedin.com/search/results/people/"));
-  assert.ok(personas[1].linkedin_search_url.includes("keywords=CTO%20ACME"));
+  assert.ok(personas[1].linkedin_search_url.includes("keywords=ACME%20CTO"));
+  const encodedRole = encodeURIComponent("VP Marketing");
+  assert.ok(personas[0].zoominfo_link.includes("ACME"));
+  assert.ok(personas[0].zoominfo_link.includes(encodedRole));
+  assert.ok(!personas[0].zoominfo_link.includes("Alice"));
 });
 
 test("parsePersonaEmailMarkdown extracts subject and body", () => {
@@ -283,20 +288,31 @@ Close with CTA.`,
 });
 
 test("toLinkedInPeopleSearchUrl builds encoded search URL", () => {
-  const url = toLinkedInPeopleSearchUrl("CISO Adani");
+  const url = toLinkedInPeopleSearchUrl('Adani "CISO" OR "Chief Information Security Officer"');
   assert.ok(url.startsWith("https://www.linkedin.com/search/results/people/"));
-  assert.ok(url.includes("CISO%20Adani"));
+  assert.ok(url.includes("Adani%20CISO"));
 });
 
-test("buildLinkedInKeywordFallback includes company and product context", () => {
+test("buildLinkedInKeywordFallback prefixes company and keeps primary title", () => {
   const keywords = buildLinkedInKeywordFallback(
     { name: "Zed", designation: "Head of IT" },
     "ACME Corp",
     "Cloud Security"
   );
+  assert.ok(keywords.startsWith("ACME Corp"));
   assert.ok(keywords.includes("Head of IT"));
-  assert.ok(keywords.includes("ACME Corp"));
-  assert.ok(keywords.includes("Cloud Security"));
+  assert.ok(!keywords.includes("Cloud Security"));
+});
+
+test("buildZoomInfoSearchLink omits persona names and keeps company + role", () => {
+  const url = buildZoomInfoSearchLink(
+    { name: "Jane Smith", designation: "CISO", department: "Security" },
+    "ACME Corp"
+  );
+  assert.ok(url.includes(encodeURIComponent("ACME Corp")));
+  assert.ok(url.includes("CISO"));
+  assert.ok(!url.includes("Jane"));
+  assert.ok(!url.includes("Smith"));
 });
 
 test("parseRevenueSectorMarkdown reads labeled lines", () => {

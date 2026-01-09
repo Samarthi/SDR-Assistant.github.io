@@ -46,17 +46,18 @@ Return markdown only as bullet points (no code fences). Use this format for each
     const department = persona.department || persona.personaDepartment || persona.persona_department || "";
     const pitchingOrg = (pitchFromCompany && pitchFromCompany.trim()) || "your company";
     const prospectLabel = company || "the target company";
-    return `You are a helpful assistant. Generate a concise telephonic sales pitch for one persona.
+    return `You are a helpful assistant. Generate one concise telephonic sales pitch for the single persona provided.
   Perspective:
       - You represent ${pitchingOrg}. You are pitching ${prospectLabel}, who is the prospect.
       - Do not flip the roles: ${pitchingOrg} is the seller, ${prospectLabel} is the buyer.
   Instructions:
       - Research the product, company priorities, and each persona's responsibilities so the caller sounds well informed and relevant.
-      - Build a 45-60 second phone script for every persona that starts with a personalized opener, adds one probing question, and ties ${product} to their KPIs.
+      - Build a 45-60 second phone script for the persona listed above that starts with a personalized opener, adds one probing question, and ties ${product} to their KPIs.
       - Maintain a confident, consultative tone that feels natural for a live call. Avoid long email-like sentences. Use the use cases and numbers from the context documents to build a solid pitch and customize it according to the prospect's context.
       - Keep the telephonic script very crisp, short and sales friendly.
       - Format the brief with sufficient newline characters, punctuations and spaces, like a formal brief would.
       - Include at least 4-5 of the most unique selling points of the product from the context docs.
+      - Output must be strictly parseable: return exactly the two labeled lines in this order, with no headings, numbering, or extra text before or after.
       - Here's an example of a nice telephonic pitch, do not use this blindly: "Hi [Name], this is [Your Name] calling from [Your Company]. Am I catching you at a good time for quick minute?
       Great, thank you! I'll keep this really short. I work with companies in the [Target company sector]- helping them [your product feature verbs].
       You might have heard of [Your Product] - it's a solution that helps [Your Product Features]. 
@@ -90,7 +91,7 @@ Return markdown only as bullet points (no code fences). Use this format for each
     const department = persona.department || persona.personaDepartment || persona.persona_department || "";
     const pitchingOrg = (pitchFromCompany && pitchFromCompany.trim()) || "your company";
     const prospectLabel = company || "the target company";
-    return `You are a helpful assistant. Generate outbound email drafts for each persona.
+    return `You are a helpful assistant. Generate one outbound email draft for the single persona provided.
 Prospect company: ${prospectLabel}
 Pitching organization (you): ${pitchingOrg}
 Location: ${location || "N/A"}
@@ -102,11 +103,12 @@ ${docsText || "(no docs provided)"}
 
 Rules:
 - ${prospectLabel} is the prospect. Every email must be written from ${pitchingOrg}'s perspective pitching ${prospectLabel} on ${product}. Never reverse these roles.
-- Create a separate subject and body for every persona listed; ensure persona_name matches the persona you are writing for.
+- Write only for the single persona listed in the Persona line above. Do not write multiple emails or personas.
 - Emails must include a crisp subject and concise, sales-forward body tailored to that persona.  Make the email crisp (with bullets for each point) and visually appealing with numbers and statistics from the documents uploaded. 
 - Including at least 4-5 most relevant unique selling points for the product from the context docs.
 - Always address the recipient using the placeholder "[First Name]" in the salutation and anywhere you need their name. Do not use their title or any actual name.
 - Format the brief with sufficient newline characters, punctuations and spaces, like a formal brief would.
+- Output must be strictly parseable: return exactly the three labeled lines in this order, with no headings, numbering, or extra text before or after.
 - Here's an example of an email brief. Do not blindly use this. Build your own based on the data from context docs:
     Subject: PVR INOX: Guaranteed 90% Faster Content Delivery with IBM Aspera.
 
@@ -180,6 +182,7 @@ Rules:
 - Keep it concise, sales-forward, and tailored to the persona.
 - Keep the subject crisp; keep the body short and skimmable.
 - Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"} on ${product || "the product"}.
+- Output must be strictly parseable: return exactly the three labeled lines in this order, with no headings, numbering, or extra text before or after.
 
 Return markdown only in this exact format (no headings, no code fences):
 Persona=${personaLabel}; Title=${designation || "N/A"}; Department=${department || "N/A"}
@@ -231,6 +234,7 @@ Instructions:
 - Keep it crisp and action-oriented; avoid email-like walls of text.
 - Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"}.
 - Do not split the response into labeled sections (call goal, opener, CTA, etc.); keep everything woven into one tight script.
+- Output must be strictly parseable: return exactly the two labeled lines in this order, with no headings, numbering, or extra text before or after.
 
 Return markdown only in this exact format (no headings, no code fences):
 Persona=${personaLabel}; Title=${designation || "N/A"}; Department=${department || "N/A"}
@@ -278,6 +282,7 @@ Do not include personal names in the personas. Refer to personas only by their t
 Include a LinkedIn People search keyword string for each persona that would help find the right titles at ${companyName || "the company"} for ${product}. Do not return a LinkedIn URL - only the keyword string.
 Return a simple keyword search string that always includes the corporation name at the front, followed by only the most common title for the persona's position. Do not include title variations, quotes, OR/AND operators, or other Boolean connectors (e.g., CompanyName VP Security).
 The SearchLink should be a Google query that combines only the corporation name and the persona's position (no personal names).
+Return no more than 5 personas total.
 Return markdown only. Provide one bullet per persona using this format (no headings, no code fences):
 - Title=<Job title>; Department=<Department>; SearchLink=<ZoomInfo/LinkedIn style Google search link>; LinkedInKeywords=<keyword string for LinkedIn People search>`;
   }

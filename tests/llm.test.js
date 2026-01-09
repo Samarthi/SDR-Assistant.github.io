@@ -246,30 +246,51 @@ test("callGroqWithRetry backs off when 429 lacks reset hints", async () => {
   }
 });
 
-test("callGeminiDirect routes through Groq with Groq model", async () => {
-  let capturedModel = null;
+test("callGeminiDirect uses Gemini endpoint and returns tool calls", async () => {
+  let capturedUrl = null;
   mockFetchSequence([
     (url, init) => {
+      capturedUrl = url;
       const body = JSON.parse(init.body);
-      capturedModel = body.model;
+      assert.ok(body.contents && body.contents.length);
       return makeResponse({
-        body: JSON.stringify({ choices: [{ message: { content: "gemini via groq" } }] }),
+        body: JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { functionCall: { name: "run_js", args: { code: "function transform(){}" } } },
+                ],
+              },
+            },
+          ],
+        }),
       });
     },
   ]);
 
-  const resp = await callGeminiDirect("gemini prompt", { model: "gemini-2.0-pro" }, { groqKey: "test-key" });
+  const resp = await callGeminiDirect(
+    "gemini prompt",
+    {
+      model: "gemini-2.0-pro",
+      allowToolCalls: true,
+      tools: [{ type: "function", function: { name: "run_js", parameters: { type: "object", properties: {} } } }],
+    },
+    { geminiKey: "test-key" }
+  );
 
   assert.ok(resp.ok);
-  assert.ok(capturedModel.startsWith("openai/"));
+  assert.ok(capturedUrl && capturedUrl.includes("generativelanguage.googleapis.com"));
+  assert.ok(Array.isArray(resp.toolCalls));
+  assert.strictEqual(resp.toolCalls[0].function.name, "run_js");
 });
 
 test("callLlmWithRetry uses stored Groq settings", async () => {
   chromeStub.storage.local.get = async () => ({
     llmProvider: "groq",
     llmModel: "openai/gpt-oss-120b",
-    geminiKey: "",
-    groqKey: "stored-key",
+    groqKeys: [{ id: "k1", value: "stored-key" }],
+    groqActiveKeyId: "k1",
   });
 
   mockFetchSequence([
@@ -281,6 +302,43 @@ test("callLlmWithRetry uses stored Groq settings", async () => {
   const resp = await callLlmWithRetry("llm prompt");
   assert.ok(resp.ok);
   assert.strictEqual(resp.text, "llm done");
+});
+
+test("callGroqWithRetry rotates keys on 401", async () => {
+  const auth = [];
+  mockFetchSequence([
+    (url, init) => {
+      auth.push(init.headers.Authorization);
+      return makeResponse({
+        ok: false,
+        status: 401,
+        body: JSON.stringify({ error: { message: "unauthorized" } }),
+      });
+    },
+    (url, init) => {
+      auth.push(init.headers.Authorization);
+      return makeResponse({
+        body: JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+      });
+    },
+  ]);
+
+  const resp = await callGroqWithRetry(
+    "retry prompt",
+    { model: "openai/gpt-oss-120b", maxAttempts: 2 },
+    {
+      groqKeys: [
+        { id: "k1", value: "key-1" },
+        { id: "k2", value: "key-2" },
+      ],
+      groqActiveKeyId: "k1",
+      model: "openai/gpt-oss-120b",
+    }
+  );
+
+  assert.ok(resp.ok);
+  assert.strictEqual(auth[0], "Bearer key-1");
+  assert.strictEqual(auth[1], "Bearer key-2");
 });
 
 test("parsePersonasFromMarkdown extracts persona list", () => {
@@ -313,6 +371,30 @@ Line two`,
   assert.ok(parsed.body.includes("Line two"));
 });
 
+test("parsePersonaEmailMarkdown selects matching persona block", () => {
+  const parsed = parsePersonaEmailMarkdown(
+    `Outbound Email Drafts for Aurobindo Pharma
+---
+1. Persona: Procurement Manager
+Subject: First subject
+Body:
+Line one
+---
+2. Persona: IT Director
+Subject - Second subject
+Body:
+Line two
+---
+Note: Customize placeholders.`,
+    { designation: "IT Director" }
+  );
+  assert.strictEqual(parsed.personaName, "IT Director");
+  assert.strictEqual(parsed.subject, "Second subject");
+  assert.ok(parsed.body.includes("Line two"));
+  assert.ok(!parsed.body.includes("Note:"));
+  assert.ok(!parsed.body.includes("---"));
+});
+
 test("parseTelephonicPitchMarkdown extracts script", () => {
   const parsed = parseTelephonicPitchMarkdown(
     `Persona=Bob Roe; Title=CTO; Department=Engineering
@@ -323,6 +405,28 @@ Close with CTA.`,
   );
   assert.strictEqual(parsed.personaName, "Bob Roe");
   assert.ok(parsed.script.includes("CTA"));
+});
+
+test("parseTelephonicPitchMarkdown selects matching persona block", () => {
+  const parsed = parseTelephonicPitchMarkdown(
+    `Telephonic Pitch Drafts
+---
+1. Persona: Procurement Manager
+Telephonic Pitch:
+Pitch one line.
+---
+2. Persona: IT Director
+Telephonic Pitch: Inline opening line.
+Follow up line.
+---
+Note: Add KPIs.`,
+    { designation: "IT Director" }
+  );
+  assert.strictEqual(parsed.personaName, "IT Director");
+  assert.ok(parsed.script.includes("Inline opening line."));
+  assert.ok(parsed.script.includes("Follow up line."));
+  assert.ok(!parsed.script.includes("Note:"));
+  assert.ok(!parsed.script.includes("---"));
 });
 
 test("toLinkedInPeopleSearchUrl builds encoded search URL", () => {

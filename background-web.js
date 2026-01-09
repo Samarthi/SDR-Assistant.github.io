@@ -15,14 +15,21 @@ const TELEMETRY_BATCH_SIZE = 10;
 const TELEMETRY_QUEUE_LIMIT = 200;
 const PERSONA_NORMALIZE_ALARM = "personaNormalizeAlarm";
 const PERSONA_NORMALIZE_INTERVAL_MINUTES = 0.1666667;
+const PERSONA_BRIEF_LIMIT = 5;
 const INSTALLATION_ID_KEY = "installationId";
 const LAST_ACTIVE_PING_DATE_KEY = "lastActivePingDate";
 const LLM_PROVIDER_STORAGE_KEY = "llmProvider";
 const LLM_MODEL_STORAGE_KEY = "llmModel";
+const GEMINI_KEY_STORAGE_KEY = "geminiKey";
 const GROQ_KEY_STORAGE_KEY = "groqKey";
+const GEMINI_KEYS_STORAGE_KEY = "geminiKeys";
+const GROQ_KEYS_STORAGE_KEY = "groqKeys";
+const GEMINI_ACTIVE_KEY_STORAGE_KEY = "geminiActiveKeyId";
+const GROQ_ACTIVE_KEY_STORAGE_KEY = "groqActiveKeyId";
 const LLMProvider = {
   GEMINI: "gemini",
   GROQ: "groq",
+  ALL: "all",
 };
 const GROQ_COMPOUND_MODEL = "groq/compound";
 const GROQ_COMPOUND_MINI_MODEL = "groq/compound-mini";
@@ -150,7 +157,7 @@ function emitBriefPartialUpdate(runId, payload = {}) {
 }
 
 function normalizeLlmProvider(provider, hasGeminiKey, hasGroqKey) {
-  if (provider === LLMProvider.GEMINI || provider === LLMProvider.GROQ) return provider;
+  if (provider === LLMProvider.GEMINI || provider === LLMProvider.GROQ || provider === LLMProvider.ALL) return provider;
   if (hasGroqKey) return LLMProvider.GROQ;
   if (hasGeminiKey) return LLMProvider.GEMINI;
   return LLMProvider.GROQ;
@@ -180,17 +187,132 @@ function coerceModelForProvider(provider, model) {
   return fallback;
 }
 
+function resolveProviderForComponent(settings, opts = {}) {
+  // Placeholder: component-to-backend matching will be provided later.
+  const componentId = opts && (opts.component || opts.componentId);
+  if (componentId) {
+    // TODO: replace with component mapping rules.
+  }
+  if (settings && Array.isArray(settings.groqKeys) && settings.groqKeys.length) return LLMProvider.GROQ;
+  if (settings && Array.isArray(settings.geminiKeys) && settings.geminiKeys.length) return LLMProvider.GEMINI;
+  return LLMProvider.GROQ;
+}
+
+function createKeyId(prefix, value) {
+  if (!value) return `${prefix}-${Date.now()}`;
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  const suffix = Math.abs(hash).toString(16);
+  return `${prefix}-${suffix}`;
+}
+
+function normalizeKeyEntry(entry, prefix = "key") {
+  if (!entry) return null;
+  if (typeof entry === "string") {
+    const value = entry.trim();
+    if (!value) return null;
+    return { id: createKeyId(prefix, value), value, label: "" };
+  }
+  if (typeof entry !== "object") return null;
+  const valueRaw =
+    typeof entry.value === "string"
+      ? entry.value
+      : typeof entry.key === "string"
+        ? entry.key
+        : "";
+  const value = valueRaw.trim();
+  if (!value) return null;
+  const id = typeof entry.id === "string" && entry.id.trim()
+    ? entry.id.trim()
+    : createKeyId(prefix, value);
+  const label = typeof entry.label === "string" ? entry.label.trim() : "";
+  return { id, value, label };
+}
+
+function normalizeKeyList(list, legacyValue, prefix = "key") {
+  const normalized = [];
+  const seen = new Set();
+  const addEntry = (entry) => {
+    const normalizedEntry = normalizeKeyEntry(entry, prefix);
+    if (!normalizedEntry || !normalizedEntry.value) return;
+    if (seen.has(normalizedEntry.value)) return;
+    seen.add(normalizedEntry.value);
+    normalized.push(normalizedEntry);
+  };
+  if (Array.isArray(list)) {
+    list.forEach(addEntry);
+  }
+  if (typeof legacyValue === "string" && legacyValue.trim()) {
+    addEntry(legacyValue.trim());
+  }
+  return normalized;
+}
+
+function resolveActiveKeyId(keys, storedId) {
+  if (storedId && keys.some((key) => key.id === storedId)) return storedId;
+  return keys[0] ? keys[0].id : "";
+}
+
+function resolveActiveKey(keys, storedId) {
+  if (!Array.isArray(keys) || !keys.length) return null;
+  if (storedId) {
+    const match = keys.find((key) => key.id === storedId);
+    if (match) return match;
+  }
+  return keys[0];
+}
+
+function resolveActiveKeyValue(keys, storedId) {
+  const active = resolveActiveKey(keys, storedId);
+  return active && typeof active.value === "string" ? active.value : "";
+}
+
+function buildKeyRotation(keys, storedId) {
+  if (!Array.isArray(keys) || !keys.length) return [];
+  const idx = storedId ? keys.findIndex((key) => key.id === storedId) : -1;
+  if (idx <= 0) return keys.slice();
+  return keys.slice(idx).concat(keys.slice(0, idx));
+}
+
+function shouldFailoverKey(status) {
+  return status === 401 || status === 429;
+}
+
+async function persistActiveKeyId(provider, keyId, currentId) {
+  if (!keyId || keyId === currentId) return;
+  const storageKey = provider === LLMProvider.GEMINI ? GEMINI_ACTIVE_KEY_STORAGE_KEY : GROQ_ACTIVE_KEY_STORAGE_KEY;
+  try {
+    await chrome.storage.local.set({ [storageKey]: keyId });
+  } catch (err) {
+    // Ignore storage failures for background failover updates.
+  }
+}
+
 async function loadLlmSettings() {
   try {
     const data = await chrome.storage.local.get([
       LLM_PROVIDER_STORAGE_KEY,
       LLM_MODEL_STORAGE_KEY,
-      "geminiKey",
+      GEMINI_KEY_STORAGE_KEY,
       GROQ_KEY_STORAGE_KEY,
+      GEMINI_KEYS_STORAGE_KEY,
+      GROQ_KEYS_STORAGE_KEY,
+      GEMINI_ACTIVE_KEY_STORAGE_KEY,
+      GROQ_ACTIVE_KEY_STORAGE_KEY,
     ]);
-    const geminiKey = data && data.geminiKey ? String(data.geminiKey) : "";
-    const groqKey = data && data[GROQ_KEY_STORAGE_KEY] ? String(data[GROQ_KEY_STORAGE_KEY]) : "";
-    const provider = normalizeLlmProvider(data && data[LLM_PROVIDER_STORAGE_KEY], !!geminiKey, !!groqKey);
+    const geminiKeys = normalizeKeyList(data && data[GEMINI_KEYS_STORAGE_KEY], data && data[GEMINI_KEY_STORAGE_KEY], "gemini");
+    const groqKeys = normalizeKeyList(data && data[GROQ_KEYS_STORAGE_KEY], data && data[GROQ_KEY_STORAGE_KEY], "groq");
+    const geminiActiveKeyId = resolveActiveKeyId(geminiKeys, data && data[GEMINI_ACTIVE_KEY_STORAGE_KEY]);
+    const groqActiveKeyId = resolveActiveKeyId(groqKeys, data && data[GROQ_ACTIVE_KEY_STORAGE_KEY]);
+    const geminiKey = resolveActiveKeyValue(geminiKeys, geminiActiveKeyId);
+    const groqKey = resolveActiveKeyValue(groqKeys, groqActiveKeyId);
+    const provider = normalizeLlmProvider(
+      data && data[LLM_PROVIDER_STORAGE_KEY],
+      geminiKeys.length > 0,
+      groqKeys.length > 0
+    );
     let model = coerceModelForProvider(provider, normalizeLlmModel(data && data[LLM_MODEL_STORAGE_KEY], provider));
     // Promote old Groq default to the new primary model.
     if (
@@ -200,40 +322,249 @@ async function loadLlmSettings() {
     ) {
       model = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
     }
-    return { provider, model, geminiKey, groqKey };
+    return {
+      provider,
+      model,
+      geminiKey,
+      groqKey,
+      geminiKeys,
+      groqKeys,
+      geminiActiveKeyId,
+      groqActiveKeyId,
+    };
   } catch (err) {
     return {
       provider: LLMProvider.GEMINI,
       model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
       geminiKey: "",
       groqKey: "",
+      geminiKeys: [],
+      groqKeys: [],
+      geminiActiveKeyId: "",
+      groqActiveKeyId: "",
     };
   }
 }
 
 async function callGeminiDirect(promptText, opts = {}, providerSettings = {}) {
-  // Gemini is routed through Groq for consistency with the project-wide Groq usage.
-  const candidateModel =
+  const modelName =
     coerceModelForProvider(
-      LLMProvider.GROQ,
+      LLMProvider.GEMINI,
       (opts && opts.model && typeof opts.model === "string" ? opts.model : null) ||
-        DEFAULT_LLM_MODELS[LLMProvider.GROQ]
-    ) || DEFAULT_LLM_MODELS[LLMProvider.GROQ];
-  const groqModel = candidateModel && candidateModel.toLowerCase().startsWith("openai/")
-    ? candidateModel
-    : "openai/gpt-oss-120b";
+        (providerSettings && providerSettings.model) ||
+        DEFAULT_LLM_MODELS[LLMProvider.GEMINI]
+    ) || DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
 
-  const shimmedOpts = {
-    ...opts,
-    model: groqModel,
+  const explicitKey =
+    providerSettings && typeof providerSettings.geminiKey === "string" ? providerSettings.geminiKey.trim() : "";
+  let geminiKey = explicitKey;
+  if (!geminiKey) {
+    const settingsKeys = normalizeKeyList(
+      providerSettings && providerSettings.geminiKeys,
+      "",
+      "gemini"
+    );
+    const settingsActiveId = resolveActiveKeyId(settingsKeys, providerSettings && providerSettings.geminiActiveKeyId);
+    geminiKey = resolveActiveKeyValue(settingsKeys, settingsActiveId);
+  }
+  if (!geminiKey) {
+    const data = await chrome.storage.local.get([
+      GEMINI_KEYS_STORAGE_KEY,
+      GEMINI_ACTIVE_KEY_STORAGE_KEY,
+      GEMINI_KEY_STORAGE_KEY,
+    ]);
+    const storedKeys = normalizeKeyList(data && data[GEMINI_KEYS_STORAGE_KEY], data && data[GEMINI_KEY_STORAGE_KEY], "gemini");
+    const storedActiveId = resolveActiveKeyId(storedKeys, data && data[GEMINI_ACTIVE_KEY_STORAGE_KEY]);
+    geminiKey = resolveActiveKeyValue(storedKeys, storedActiveId);
+  }
+  if (!geminiKey) {
+    return { error: "No Gemini API key found. Please add it in the popup." };
+  }
+
+  const userCfg = opts.generationConfig || {};
+  const temperature = Math.max(0, Math.min(userCfg.temperature ?? 0.3, 1));
+  const maxTokens = Math.max(1, Math.min(userCfg.maxOutputTokens ?? userCfg.maxTokens ?? 4000, 8192));
+  const topP = Math.max(0, Math.min(typeof userCfg.topP === "number" ? userCfg.topP : 1, 1));
+  const stopSequences = Array.isArray(userCfg.stopSequences || userCfg.stop)
+    ? (userCfg.stopSequences || userCfg.stop).filter((s) => typeof s === "string" && s.length)
+    : null;
+  const responseMimeType = typeof userCfg.responseMimeType === "string" ? userCfg.responseMimeType : "";
+  const systemSegments = [];
+  const normalizedInstruction = extractInstructionText(opts.systemInstruction || opts.systemPrompt || opts.system);
+  if (normalizedInstruction) systemSegments.push(normalizedInstruction);
+  if (typeof opts.context === "string" && opts.context.trim()) {
+    systemSegments.push(opts.context.trim());
+  }
+  const systemInstruction = systemSegments.filter(Boolean).join("\n\n");
+
+  const contents = buildGeminiContents({
+    promptText,
+    contents: opts.contents,
+  });
+  const { tools: geminiTools, toolConfig } = translateToolsToGemini(opts.tools, {
+    disableDefaultTools: opts.disableDefaultTools,
+    toolChoice: opts.toolChoice,
+    compoundCustom: opts.compoundCustom,
+  });
+
+  const generationConfig = {
+    temperature,
+    topP,
+    maxOutputTokens: maxTokens,
+  };
+  if (stopSequences && stopSequences.length) {
+    generationConfig.stopSequences = stopSequences;
+  }
+  if (responseMimeType) {
+    generationConfig.responseMimeType = responseMimeType;
+  }
+
+  const body = {
+    contents,
+    generationConfig,
+  };
+  if (systemInstruction) {
+    body.systemInstruction = { parts: [{ text: systemInstruction }] };
+  }
+  if (geminiTools && geminiTools.length) {
+    body.tools = geminiTools;
+  }
+  if (toolConfig) {
+    body.toolConfig = toolConfig;
+  }
+
+  try {
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const retryAfterMs = parseRetryAfterMs(resp.headers);
+    const rateLimit = retryAfterMs !== null ? { retryAfterMs } : null;
+    const respText = await resp.text();
+    let respJson = null;
+    try {
+      respJson = JSON.parse(respText);
+    } catch (err) {
+      if (!resp.ok) {
+        return { error: `Gemini API error (Status ${resp.status}): ${respText}`, status: resp.status, rateLimit };
+      }
+      return { error: "Failed to parse Gemini API response as JSON.", details: respText, status: resp.status, rateLimit };
+    }
+
+    if (!resp.ok) {
+      const message = respJson?.error?.message || respText;
+      return { error: `Gemini API error: ${message}`, details: respJson, status: resp.status, rateLimit };
+    }
+
+    const parts = respJson?.candidates?.[0]?.content?.parts || [];
+    const outputText = extractGeminiText(parts);
+    const toolCalls = extractGeminiToolCalls(parts);
+
+    if (!outputText) {
+      if (toolCalls.length && opts && opts.allowToolCalls) {
+        return { ok: true, text: "", toolCalls, raw: respJson, status: resp.status, rateLimit };
+      }
+      if (toolCalls.length) {
+        return {
+          error: "Model returned tool calls without textual content.",
+          details: respJson || { toolCalls },
+          status: resp.status,
+          rateLimit,
+        };
+      }
+      return { error: "Could not find text in Gemini response.", details: respJson, status: resp.status, rateLimit };
+    }
+
+    return { ok: true, text: outputText, toolCalls, raw: respJson, status: resp.status, rateLimit };
+  } catch (err) {
+    return { error: `Network request failed: ${String(err)}` };
+  }
+}
+
+async function callGeminiWithRetry(promptText, opts = {}, providerSettings = {}) {
+  const baseConfig = opts.generationConfig || {};
+  const model =
+    opts && opts.model
+      ? coerceModelForProvider(LLMProvider.GEMINI, opts.model)
+      : coerceModelForProvider(LLMProvider.GEMINI, providerSettings.model || DEFAULT_LLM_MODELS[LLMProvider.GEMINI]);
+  const maxAttempts = Math.max(1, Math.min(opts.maxAttempts || 6, 6));
+  const keyEntries = normalizeKeyList(providerSettings && providerSettings.geminiKeys, providerSettings && providerSettings.geminiKey, "gemini");
+  const activeKeyId = resolveActiveKeyId(keyEntries, providerSettings && providerSettings.geminiActiveKeyId);
+  const rotation = buildKeyRotation(keyEntries, activeKeyId);
+  const attempts = [];
+  let attemptIndex = 0;
+  let lastError = null;
+  let keyIndex = 0;
+
+  const computeWaitMs = (rateLimit, status) => {
+    const MAX_WAIT_MS = 60000;
+    let waitMs = null;
+    if (rateLimit && Number.isFinite(rateLimit.retryAfterMs)) {
+      waitMs = rateLimit.retryAfterMs;
+    }
+    if ((waitMs === null || !Number.isFinite(waitMs)) && status === 429) {
+      waitMs = MAX_WAIT_MS;
+    }
+    if (waitMs === null || !Number.isFinite(waitMs)) return null;
+    return Math.min(MAX_WAIT_MS, Math.max(0, waitMs));
   };
 
-  return callGroqDirect(promptText, shimmedOpts, providerSettings);
+  while (attemptIndex < maxAttempts) {
+    const currentKey = rotation.length ? rotation[keyIndex] : null;
+    const resp = await callGeminiDirect(
+      promptText,
+      {
+        ...opts,
+        model,
+        generationConfig: baseConfig,
+      },
+      {
+        ...providerSettings,
+        model,
+        geminiKey: currentKey ? currentKey.value : providerSettings.geminiKey,
+      }
+    );
+
+    if (!resp.error) {
+      if (currentKey && currentKey.id !== activeKeyId) {
+        await persistActiveKeyId(LLMProvider.GEMINI, currentKey.id, activeKeyId);
+      }
+      return attemptIndex === 0 ? resp : { ...resp, attempts };
+    }
+
+    attempts.push({
+      label: attemptIndex === 0 ? "primary" : "retry",
+      error: resp.error,
+      details: resp.details || resp.raw || resp.rateLimit || null,
+      status: resp.status,
+      rateLimit: resp.rateLimit,
+    });
+
+    lastError = resp;
+    attemptIndex += 1;
+    if (attemptIndex >= maxAttempts) break;
+
+    const shouldRotateKey = shouldFailoverKey(resp.status) && rotation.length > 1;
+    if (shouldRotateKey) {
+      keyIndex = (keyIndex + 1) % rotation.length;
+    }
+
+    const waitMs = addJitter(computeWaitMs(resp.rateLimit, resp.status));
+    if (Number.isFinite(waitMs) && waitMs > 0 && !(shouldRotateKey && resp.status === 429)) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
+  return { ...lastError, attempts };
 }
 
 async function callGeminiWithRetryInternal(promptText, opts = {}, providerSettings = {}) {
-  // Route through Groq retry logic for consistency; Gemini transport is deprecated here.
-  return callGroqWithRetry(promptText, { ...opts }, providerSettings);
+  return callGeminiWithRetry(promptText, { ...opts }, providerSettings);
 }
 
 function normalizeGroqRole(role) {
@@ -357,6 +688,152 @@ function translateToolsToGroq(tools, disableDefaultTools) {
   return { tools: translated, choice: translated.length ? "auto" : undefined };
 }
 
+function normalizeGeminiRole(role) {
+  if (role === "model" || role === "assistant") return "model";
+  return "user";
+}
+
+function buildGeminiContents({ promptText, contents }) {
+  const items = [];
+  if (Array.isArray(contents) && contents.length) {
+    contents.forEach((item) => {
+      const role = normalizeGeminiRole(item && typeof item.role === "string" ? item.role : "user");
+      const text = partsToText(item?.parts || item?.content || []);
+      if (text) {
+        items.push({ role, parts: [{ text }] });
+      }
+    });
+  }
+
+  const trimmedPrompt = typeof promptText === "string" ? promptText.trim() : "";
+  if (trimmedPrompt && !items.some((entry) => entry.role === "user" && entry.parts?.[0]?.text === trimmedPrompt)) {
+    items.push({ role: "user", parts: [{ text: trimmedPrompt }] });
+  }
+
+  if (!items.length) {
+    items.push({ role: "user", parts: [{ text: trimmedPrompt || "" }] });
+  }
+
+  return items;
+}
+
+function normalizeGeminiToolMode(choice) {
+  if (!choice) return "AUTO";
+  const normalized = String(choice).toLowerCase();
+  if (normalized === "none") return "NONE";
+  if (normalized === "any" || normalized === "required") return "ANY";
+  return "AUTO";
+}
+
+function translateToolsToGemini(tools, options = {}) {
+  if (options.disableDefaultTools) return { tools: [], toolConfig: null };
+
+  const functionDeclarations = [];
+  let wantsSearch = false;
+  const addSearch = () => {
+    wantsSearch = true;
+  };
+
+  if (Array.isArray(tools) && tools.length) {
+    const alreadyOpenAi = tools.every((tool) => tool && typeof tool === "object" && tool.type);
+    if (alreadyOpenAi) {
+      tools.forEach((tool) => {
+        if (!tool || typeof tool !== "object") return;
+        if (tool.type === "function" && tool.function && tool.function.name) {
+          functionDeclarations.push({
+            name: tool.function.name,
+            description: tool.function.description || "",
+            parameters: tool.function.parameters || { type: "object", properties: {} },
+          });
+        }
+        if (tool.type === "browser_search" || tool.type === "web_search") {
+          addSearch();
+        }
+      });
+    } else {
+      tools.forEach((tool) => {
+        if (!tool || typeof tool !== "object") return;
+        const hasGoogleSearch =
+          Object.prototype.hasOwnProperty.call(tool, "google_search") ||
+          Object.prototype.hasOwnProperty.call(tool, "googleSearch");
+        const hasGoogleMaps =
+          Object.prototype.hasOwnProperty.call(tool, "googleMaps") ||
+          Object.prototype.hasOwnProperty.call(tool, "google_maps");
+        if (hasGoogleSearch || hasGoogleMaps) {
+          addSearch();
+        }
+      });
+    }
+  }
+
+  const enabledTools = options?.compoundCustom?.tools?.enabled_tools;
+  if (Array.isArray(enabledTools)) {
+    enabledTools.forEach((tool) => {
+      const normalized = typeof tool === "string" ? tool.toLowerCase() : "";
+      if (normalized === "web_search" || normalized === "browser_search" || normalized === "google_search") {
+        addSearch();
+      }
+    });
+  }
+
+  const geminiTools = [];
+  if (functionDeclarations.length) {
+    geminiTools.push({ functionDeclarations });
+  }
+  if (wantsSearch) {
+    geminiTools.push({ googleSearch: {} });
+  }
+
+  const toolConfig = functionDeclarations.length
+    ? { functionCallingConfig: { mode: normalizeGeminiToolMode(options.toolChoice) } }
+    : null;
+
+  return { tools: geminiTools, toolConfig };
+}
+
+function extractGeminiText(parts = []) {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .map((part) => {
+      if (typeof part?.text === "string" && part.text.trim()) return part.text.trim();
+      if (typeof part?.inlineData?.data === "string" && part.inlineData.data.trim()) {
+        return decodeBase64Text(part.inlineData.data);
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function extractGeminiToolCalls(parts = []) {
+  if (!Array.isArray(parts)) return [];
+  const calls = [];
+  parts.forEach((part, idx) => {
+    const fnCall = part && part.functionCall ? part.functionCall : null;
+    if (!fnCall || !fnCall.name) return;
+    let args = "";
+    if (typeof fnCall.args === "string") {
+      args = fnCall.args;
+    } else {
+      try {
+        args = JSON.stringify(fnCall.args || {});
+      } catch (err) {
+        args = "{}";
+      }
+    }
+    calls.push({
+      id: `gemini-${idx}-${fnCall.name}`,
+      type: "function",
+      function: {
+        name: fnCall.name,
+        arguments: args || "{}",
+      },
+    });
+  });
+  return calls;
+}
+
 function parseRetryAfterMs(headers) {
   if (!headers || typeof headers.get !== "function") return null;
   const raw = headers.get("retry-after");
@@ -405,11 +882,27 @@ function addJitter(ms) {
 }
 
 async function callGroqDirect(promptText, opts = {}, providerSettings = {}) {
-  const storedKey = providerSettings && providerSettings.groqKey ? providerSettings.groqKey : "";
-  let groqKey = storedKey;
+  const explicitKey =
+    providerSettings && typeof providerSettings.groqKey === "string" ? providerSettings.groqKey.trim() : "";
+  let groqKey = explicitKey;
   if (!groqKey) {
-    const data = await chrome.storage.local.get([GROQ_KEY_STORAGE_KEY]);
-    groqKey = data && data[GROQ_KEY_STORAGE_KEY];
+    const settingsKeys = normalizeKeyList(
+      providerSettings && providerSettings.groqKeys,
+      "",
+      "groq"
+    );
+    const settingsActiveId = resolveActiveKeyId(settingsKeys, providerSettings && providerSettings.groqActiveKeyId);
+    groqKey = resolveActiveKeyValue(settingsKeys, settingsActiveId);
+  }
+  if (!groqKey) {
+    const data = await chrome.storage.local.get([
+      GROQ_KEYS_STORAGE_KEY,
+      GROQ_ACTIVE_KEY_STORAGE_KEY,
+      GROQ_KEY_STORAGE_KEY,
+    ]);
+    const storedKeys = normalizeKeyList(data && data[GROQ_KEYS_STORAGE_KEY], data && data[GROQ_KEY_STORAGE_KEY], "groq");
+    const storedActiveId = resolveActiveKeyId(storedKeys, data && data[GROQ_ACTIVE_KEY_STORAGE_KEY]);
+    groqKey = resolveActiveKeyValue(storedKeys, storedActiveId);
   }
   if (!groqKey) {
     return { error: "No Groq API key found. Please add it in the popup." };
@@ -577,6 +1070,11 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
     secondaryModelOverride ||
     (primaryModel === GROQ_SECONDARY_MODEL ? DEFAULT_LLM_MODELS[LLMProvider.GROQ] : GROQ_SECONDARY_MODEL);
 
+  const keyEntries = normalizeKeyList(providerSettings && providerSettings.groqKeys, providerSettings && providerSettings.groqKey, "groq");
+  const activeKeyId = resolveActiveKeyId(keyEntries, providerSettings && providerSettings.groqActiveKeyId);
+  const rotation = buildKeyRotation(keyEntries, activeKeyId);
+  let keyIndex = 0;
+
   const attempts = [];
   const boostedMaxTokens = Math.min(
     typeof baseConfig.maxOutputTokens === "number" ? Math.round(baseConfig.maxOutputTokens * 1.2) : 4800,
@@ -646,6 +1144,7 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
         }
       : baseConfig;
 
+    const currentKey = rotation.length ? rotation[keyIndex] : null;
     const resp = await callGroqDirect(
       promptText,
       {
@@ -653,10 +1152,17 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
         model: currentModel,
         generationConfig,
       },
-      { ...providerSettings, model: currentModel }
+      {
+        ...providerSettings,
+        model: currentModel,
+        groqKey: currentKey ? currentKey.value : providerSettings.groqKey,
+      }
     );
 
     if (!resp.error) {
+      if (currentKey && currentKey.id !== activeKeyId) {
+        await persistActiveKeyId(LLMProvider.GROQ, currentKey.id, activeKeyId);
+      }
       return attemptIndex === 0 ? resp : { ...resp, attempts };
     }
 
@@ -677,8 +1183,13 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
     attemptIndex += 1;
     if (attemptIndex >= maxAttempts) break;
 
+    const shouldRotateKey = shouldFailoverKey(resp.status) && rotation.length > 1;
+    if (shouldRotateKey) {
+      keyIndex = (keyIndex + 1) % rotation.length;
+    }
+
     const waitMs = addJitter(computeWaitMs(resp.rateLimit, resp.status));
-    if (Number.isFinite(waitMs) && waitMs > 0) {
+    if (Number.isFinite(waitMs) && waitMs > 0 && !(shouldRotateKey && resp.status === 429)) {
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
 
@@ -692,20 +1203,15 @@ async function callGroqWithRetry(promptText, opts = {}, providerSettings = {}) {
 async function callLlmWithRetry(promptText, opts = {}) {
   const settings = await loadLlmSettings();
   const providerOverride = opts && opts.providerOverride;
-  const provider = normalizeLlmProvider(providerOverride, !!settings.geminiKey, !!settings.groqKey);
-  const model = coerceModelForProvider(provider, opts && opts.model ? opts.model : settings.model);
+  const provider = normalizeLlmProvider(providerOverride, settings.geminiKeys.length > 0, settings.groqKeys.length > 0);
+  const resolvedProvider = provider === LLMProvider.ALL ? resolveProviderForComponent(settings, opts) : provider;
+  const model = coerceModelForProvider(resolvedProvider, opts && opts.model ? opts.model : settings.model);
   const providerSettings = { ...settings, model };
 
-  // Force Groq format for all calls to avoid legacy Gemini transport.
-  const sanitizedOpts =
-    provider === LLMProvider.GROQ
-      ? opts
-      : {
-          ...opts,
-          providerOverride: LLMProvider.GROQ,
-        };
-
-  return callGroqWithRetry(promptText, sanitizedOpts, providerSettings);
+  if (resolvedProvider === LLMProvider.GEMINI) {
+    return callGeminiWithRetry(promptText, opts, providerSettings);
+  }
+  return callGroqWithRetry(promptText, opts, providerSettings);
 }
 
 function parseToolCallArguments(toolCall) {
@@ -985,12 +1491,15 @@ function parseKeyValueSegments(segment = "") {
   return out;
 }
 
-function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "", productHint = "") {
+function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "", productHint = "", maxPersonas = Infinity) {
   const lines = splitMarkdownLines(markdown);
   const personas = [];
-  lines.forEach((raw, idx) => {
+  const limit = Number.isFinite(maxPersonas) ? Math.max(0, Math.floor(maxPersonas)) : Infinity;
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    if (personas.length >= limit) break;
+    const raw = lines[idx];
     const line = raw.replace(/^-+\s*/, "").trim();
-    if (!line) return;
+    if (!line) continue;
     const kv = parseKeyValueSegments(line);
     const name = kv.name || kv.persona || `Persona ${idx + 1}`;
     const designation = kv.title || kv.designation || "";
@@ -1022,27 +1531,130 @@ function parsePersonasFromMarkdown(markdown = "", fallbackCompany = "", productH
       linkedin_search_url: toLinkedInPeopleSearchUrl(linkedinKeywords),
       zoominfo_link: buildZoomInfoSearchLink({ designation, department }, fallbackCompany) || link,
     });
-  });
+  }
   return personas;
 }
 
+function stripEmailListPrefix(line = "") {
+  let cleaned = typeof line === "string" ? line.trim() : "";
+  for (let i = 0; i < 2; i += 1) {
+    const prev = cleaned;
+    cleaned = cleaned.replace(/^\s*[-*]\s*/, "");
+    cleaned = cleaned.replace(/^\s*\d+[\).]\s*/, "");
+    cleaned = cleaned.trim();
+    if (cleaned === prev) break;
+  }
+  return cleaned;
+}
+
+function isEmailSeparatorLine(line = "") {
+  return /^[-=_]{3,}$/.test((line || "").trim());
+}
+
+function trimEmailBodyLines(lines = []) {
+  if (!Array.isArray(lines) || !lines.length) return [];
+  let start = 0;
+  let end = lines.length;
+  const isBlank = (line) => !(line && line.trim());
+  const isNote = (line) => /^note(s)?\s*[:=-]/i.test((line || "").trim());
+
+  while (start < end && (isBlank(lines[start]) || isEmailSeparatorLine(lines[start]))) start += 1;
+  while (end > start && (isBlank(lines[end - 1]) || isEmailSeparatorLine(lines[end - 1]))) end -= 1;
+
+  let trimmed = lines.slice(start, end);
+  while (trimmed.length) {
+    const last = trimmed[trimmed.length - 1];
+    if (isBlank(last) || isEmailSeparatorLine(last) || isNote(last)) {
+      trimmed.pop();
+      continue;
+    }
+    break;
+  }
+  return trimmed;
+}
+
 function parsePersonaEmailMarkdown(markdown = "", fallbackPersona = {}) {
-  const lines = stripMarkdownFences(markdown).split(/\r?\n/);
+  const rawLines = stripMarkdownFences(markdown).split(/\r?\n/);
+  const cleanedLines = rawLines.map(stripEmailListPrefix);
+  const personaIndexes = [];
+  cleanedLines.forEach((line, idx) => {
+    if (!line) return;
+    if (/^persona\s*[:=-]/i.test(line)) personaIndexes.push(idx);
+  });
+
+  let startIdx = 0;
+  let endIdx = rawLines.length;
+  if (personaIndexes.length) {
+    let selected = personaIndexes[0];
+    if (personaIndexes.length > 1) {
+      const fallbackBits = [
+        fallbackPersona?.name,
+        fallbackPersona?.personaName,
+        fallbackPersona?.persona_name,
+        fallbackPersona?.designation,
+        fallbackPersona?.personaDesignation,
+        fallbackPersona?.persona_designation,
+        fallbackPersona?.department,
+        fallbackPersona?.personaDepartment,
+        fallbackPersona?.persona_department,
+      ]
+        .filter((val) => typeof val === "string" && val.trim())
+        .map((val) => val.trim().toLowerCase());
+      let bestScore = -1;
+      personaIndexes.forEach((idx) => {
+        const line = cleanedLines[idx] || "";
+        const content = line.replace(/^persona\s*[:=-]\s*/i, "").trim().toLowerCase();
+        let score = 0;
+        fallbackBits.forEach((bit) => {
+          if (!bit) return;
+          if (content === bit) score += 100 + bit.length;
+          else if (content.includes(bit)) score += 10 + bit.length;
+        });
+        if (score > bestScore) {
+          bestScore = score;
+          selected = idx;
+        }
+      });
+    }
+    startIdx = selected;
+    const nextIdx = personaIndexes.find((idx) => idx > selected);
+    endIdx = typeof nextIdx === "number" ? nextIdx : rawLines.length;
+  }
+
+  const lines = rawLines.slice(startIdx, endIdx);
+  const normalizedLines = cleanedLines.slice(startIdx, endIdx);
+
   let personaLineIdx = -1;
   let subjectLineIdx = -1;
   let bodyLineIdx = -1;
-  lines.forEach((raw, idx) => {
-    const line = (raw || "").trim();
-    if (personaLineIdx === -1 && /^persona\s*[:=]/i.test(line)) personaLineIdx = idx;
-    if (subjectLineIdx === -1 && /^subject\s*[:=]/i.test(line)) subjectLineIdx = idx;
-    if (bodyLineIdx === -1 && /^body\s*[:=]/i.test(line)) bodyLineIdx = idx;
+  let subject = "";
+  let inlineBody = "";
+
+  normalizedLines.forEach((line, idx) => {
+    if (!line) return;
+    if (personaLineIdx === -1 && /^persona\s*[:=-]/i.test(line)) personaLineIdx = idx;
+    if (subjectLineIdx === -1) {
+      const match = line.match(/^subject\s*[:=-]\s*(.*)$/i);
+      if (match) {
+        subjectLineIdx = idx;
+        subject = (match[1] || "").trim();
+      }
+    }
+    if (bodyLineIdx === -1) {
+      const match = line.match(/^(body|email body)\s*[:=-]\s*(.*)$/i);
+      if (match) {
+        bodyLineIdx = idx;
+        inlineBody = (match[2] || "").trim();
+      }
+    }
   });
 
-  const personaLine = personaLineIdx >= 0 ? lines[personaLineIdx].trim() : "";
-  const personaLineClean = personaLine.replace(/^persona\s*[:=]\s*/i, "").trim();
-  const personaKv = parseKeyValueSegments(personaLineClean);
-  if (!personaKv.name && personaLineClean) {
-    const firstSegment = personaLineClean.split(/;\s*/)[0];
+  const personaLine = personaLineIdx >= 0 ? normalizedLines[personaLineIdx].trim() : "";
+  const personaLineClean = personaLine.replace(/^persona\s*[:=-]\s*/i, "").trim();
+  const personaLineNormalized = personaLineClean.replace(/\s*\|\s*/g, "; ");
+  const personaKv = parseKeyValueSegments(personaLineNormalized);
+  if (!personaKv.name && personaLineNormalized) {
+    const firstSegment = personaLineNormalized.split(/\s*;\s*/)[0];
     if (firstSegment) personaKv.name = firstSegment.trim();
   }
   const personaName =
@@ -1055,17 +1667,29 @@ function parsePersonaEmailMarkdown(markdown = "", fallbackPersona = {}) {
   const personaDesignation = personaKv.title || personaKv.designation || fallbackPersona.designation || "";
   const personaDepartment = personaKv.department || personaKv.dept || fallbackPersona.department || "";
 
-  const subjectLine = subjectLineIdx >= 0 ? lines[subjectLineIdx].trim() : "";
-  const subject = subjectLine.replace(/^subject\s*[:=]\s*/i, "").trim();
-
-  let body = "";
-  if (bodyLineIdx >= 0) {
-    body = lines.slice(bodyLineIdx + 1).join("\n").trim();
-  } else if (subjectLineIdx >= 0) {
-    body = lines.slice(subjectLineIdx + 1).join("\n").trim();
-  } else {
-    body = lines.join("\n").trim();
+  let subjectConsumedNextLine = false;
+  if (!subject && subjectLineIdx >= 0) {
+    const nextLine = lines[subjectLineIdx + 1];
+    const nextNormalized = normalizedLines[subjectLineIdx + 1] || "";
+    if (nextLine && nextLine.trim() && !/^(body|email body)\s*[:=-]/i.test(nextNormalized.trim())) {
+      subject = nextLine.trim();
+      subjectConsumedNextLine = true;
+    }
   }
+
+  let bodyStartIdx = 0;
+  if (bodyLineIdx >= 0) {
+    bodyStartIdx = bodyLineIdx + 1;
+  } else if (subjectLineIdx >= 0) {
+    bodyStartIdx = subjectLineIdx + 1 + (subjectConsumedNextLine ? 1 : 0);
+  }
+
+  let bodyLines = lines.slice(bodyStartIdx);
+  if (bodyLineIdx >= 0 && inlineBody) {
+    bodyLines = [inlineBody].concat(bodyLines);
+  }
+
+  const body = trimEmailBodyLines(bodyLines).join("\n").trim();
 
   return {
     personaName: personaName || fallbackPersona.name || "",
@@ -1077,20 +1701,78 @@ function parsePersonaEmailMarkdown(markdown = "", fallbackPersona = {}) {
 }
 
 function parseTelephonicPitchMarkdown(markdown = "", fallbackPersona = {}) {
-  const lines = stripMarkdownFences(markdown).split(/\r?\n/);
-  let personaLineIdx = -1;
-  let pitchLineIdx = -1;
-  lines.forEach((raw, idx) => {
-    const line = (raw || "").trim();
-    if (personaLineIdx === -1 && /^persona\s*[:=]/i.test(line)) personaLineIdx = idx;
-    if (pitchLineIdx === -1 && /^telephonic\s*pitch\s*[:=]?/i.test(line)) pitchLineIdx = idx;
+  const rawLines = stripMarkdownFences(markdown).split(/\r?\n/);
+  const cleanedLines = rawLines.map(stripEmailListPrefix);
+  const personaIndexes = [];
+  cleanedLines.forEach((line, idx) => {
+    if (!line) return;
+    if (/^persona\s*[:=-]/i.test(line)) personaIndexes.push(idx);
   });
 
-  const personaLine = personaLineIdx >= 0 ? lines[personaLineIdx].trim() : "";
-  const personaLineClean = personaLine.replace(/^persona\s*[:=]\s*/i, "").trim();
-  const personaKv = parseKeyValueSegments(personaLineClean);
-  if (!personaKv.name && personaLineClean) {
-    const firstSegment = personaLineClean.split(/;\s*/)[0];
+  let startIdx = 0;
+  let endIdx = rawLines.length;
+  if (personaIndexes.length) {
+    let selected = personaIndexes[0];
+    if (personaIndexes.length > 1) {
+      const fallbackBits = [
+        fallbackPersona?.name,
+        fallbackPersona?.personaName,
+        fallbackPersona?.persona_name,
+        fallbackPersona?.designation,
+        fallbackPersona?.personaDesignation,
+        fallbackPersona?.persona_designation,
+        fallbackPersona?.department,
+        fallbackPersona?.personaDepartment,
+        fallbackPersona?.persona_department,
+      ]
+        .filter((val) => typeof val === "string" && val.trim())
+        .map((val) => val.trim().toLowerCase());
+      let bestScore = -1;
+      personaIndexes.forEach((idx) => {
+        const line = cleanedLines[idx] || "";
+        const content = line.replace(/^persona\s*[:=-]\s*/i, "").trim().toLowerCase();
+        let score = 0;
+        fallbackBits.forEach((bit) => {
+          if (!bit) return;
+          if (content === bit) score += 100 + bit.length;
+          else if (content.includes(bit)) score += 10 + bit.length;
+        });
+        if (score > bestScore) {
+          bestScore = score;
+          selected = idx;
+        }
+      });
+    }
+    startIdx = selected;
+    const nextIdx = personaIndexes.find((idx) => idx > selected);
+    endIdx = typeof nextIdx === "number" ? nextIdx : rawLines.length;
+  }
+
+  const lines = rawLines.slice(startIdx, endIdx);
+  const normalizedLines = cleanedLines.slice(startIdx, endIdx);
+
+  let personaLineIdx = -1;
+  let pitchLineIdx = -1;
+  let inlineScript = "";
+
+  normalizedLines.forEach((line, idx) => {
+    if (!line) return;
+    if (personaLineIdx === -1 && /^persona\s*[:=-]/i.test(line)) personaLineIdx = idx;
+    if (pitchLineIdx === -1) {
+      const match = line.match(/^(telephonic\s*pitch|phone\s*(script|pitch)|call\s*script|pitch|script)\s*[:=-]\s*(.*)$/i);
+      if (match) {
+        pitchLineIdx = idx;
+        inlineScript = (match[3] || "").trim();
+      }
+    }
+  });
+
+  const personaLine = personaLineIdx >= 0 ? normalizedLines[personaLineIdx].trim() : "";
+  const personaLineClean = personaLine.replace(/^persona\s*[:=-]\s*/i, "").trim();
+  const personaLineNormalized = personaLineClean.replace(/\s*\|\s*/g, "; ");
+  const personaKv = parseKeyValueSegments(personaLineNormalized);
+  if (!personaKv.name && personaLineNormalized) {
+    const firstSegment = personaLineNormalized.split(/\s*;\s*/)[0];
     if (firstSegment) personaKv.name = firstSegment.trim();
   }
   const personaName =
@@ -1103,14 +1785,20 @@ function parseTelephonicPitchMarkdown(markdown = "", fallbackPersona = {}) {
   const personaDesignation = personaKv.title || personaKv.designation || fallbackPersona.designation || "";
   const personaDepartment = personaKv.department || personaKv.dept || fallbackPersona.department || "";
 
-  let script = "";
+  let scriptLines = [];
   if (pitchLineIdx >= 0) {
-    script = lines.slice(pitchLineIdx + 1).join("\n").trim();
+    scriptLines = lines.slice(pitchLineIdx + 1);
   } else if (personaLineIdx >= 0) {
-    script = lines.slice(personaLineIdx + 1).join("\n").trim();
+    scriptLines = lines.slice(personaLineIdx + 1);
   } else {
-    script = lines.join("\n").trim();
+    scriptLines = lines.slice();
   }
+
+  if (inlineScript) {
+    scriptLines = [inlineScript].concat(scriptLines);
+  }
+
+  const script = trimEmailBodyLines(scriptLines).join("\n").trim();
 
   return {
     personaName: personaName || fallbackPersona.name || "",
@@ -2502,6 +3190,19 @@ async function persistHistoryEntry(storageKey, entry, limit = 25) {
   return entry;
 }
 
+function shouldPersistResearchHistory(result) {
+  if (!result || typeof result !== "object") return false;
+  if (typeof result.brief_html === "string" && result.brief_html.trim()) return true;
+  if (Array.isArray(result.top_5_news) && result.top_5_news.length) return true;
+  if (Array.isArray(result.personas) && result.personas.length) return true;
+  if (Array.isArray(result.personaEmails) && result.personaEmails.length) return true;
+  if (Array.isArray(result.telephonicPitches) && result.telephonicPitches.length) return true;
+  if (typeof result.hq_location === "string" && result.hq_location.trim()) return true;
+  if (typeof result.revenue_estimate === "string" && result.revenue_estimate.trim()) return true;
+  if (typeof result.industry_sector === "string" && result.industry_sector.trim()) return true;
+  return false;
+}
+
 async function saveResearchHistoryEntry(request, result) {
   try {
     const entry = {
@@ -3531,7 +4232,7 @@ async function generatePersonaBrief({
   }
 
   const rawText = typeof resp.text === "string" ? resp.text : "";
-  const personas = parsePersonasFromMarkdown(rawText, company, product);
+  const personas = parsePersonasFromMarkdown(rawText, company, product, PERSONA_BRIEF_LIMIT);
 
   if (!Array.isArray(personas) || !personas.length) {
     return { error: "Model did not return personas.", rawText };
@@ -4028,7 +4729,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             result = { error: err?.message || String(err) };
           }
 
-          if (result && !result.error) {
+          if (shouldPersistResearchHistory(result)) {
             await saveResearchHistoryEntry(payload, result);
           }
 
@@ -4361,6 +5062,7 @@ if (typeof module !== "undefined" && module.exports) {
     callGroqDirect,
     callGroqWithRetry,
     callGeminiDirect,
+    callGeminiWithRetry,
     callGeminiWithRetryInternal,
     callLlmWithRetry,
     parseModelJsonResponse,

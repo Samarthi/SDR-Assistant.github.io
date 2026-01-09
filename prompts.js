@@ -106,6 +106,7 @@ Rules:
 - Write only for the single persona listed in the Persona line above. Do not write multiple emails or personas.
 - Emails must include a crisp subject and concise, sales-forward body tailored to that persona.  Make the email crisp (with bullets for each point) and visually appealing with numbers and statistics from the documents uploaded. 
 - Including at least 4-5 most relevant unique selling points for the product from the context docs.
+- Do not include explanations, reasoning, or analysis. Output only the email draft in the required format.
 - Always address the recipient using the placeholder "[First Name]" in the salutation and anywhere you need their name. Do not use their title or any actual name.
 - Format the brief with sufficient newline characters, punctuations and spaces, like a formal brief would.
 - Output must be strictly parseable: return exactly the three labeled lines in this order, with no headings, numbering, or extra text before or after.
@@ -182,6 +183,7 @@ Rules:
 - Keep it concise, sales-forward, and tailored to the persona.
 - Keep the subject crisp; keep the body short and skimmable.
 - Preserve correct roles: you represent ${pitchingOrg || "your company"}, pitching ${company || "the target company"} on ${product || "the product"}.
+- Do not include explanations, reasoning, or analysis. Output only the email draft in the required format.
 - Output must be strictly parseable: return exactly the three labeled lines in this order, with no headings, numbering, or extra text before or after.
 
 Return markdown only in this exact format (no headings, no code fences):

@@ -40,6 +40,7 @@ const DEFAULT_LLM_MODELS = {
 const GROQ_LEGACY_MODEL = "gpt-oss-20b";
 const GROQ_SECONDARY_MODEL = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
 const LLAMA_33_MODEL = "llama-3.3-70b-versatile";
+const TELE_PITCH_MODEL = "llama-3.1-8b-instant";
 const PERSONA_EMAIL_MODEL = "qwen/qwen3-32b";
 const EXPORT_TRANSFORM_TOOL_NAME = "run_js";
 const EXPORT_TRANSFORM_MODEL = "qwen/qwen3-32b";
@@ -1482,6 +1483,15 @@ function stripMarkdownFences(text = "") {
   });
 }
 
+function stripControlChars(text = "") {
+  if (typeof text !== "string") return "";
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").replace(/\uFFFD/g, "");
+}
+
+function cleanModelText(text = "") {
+  return stripControlChars(typeof text === "string" ? text : "").trim();
+}
+
 function splitMarkdownLines(markdown = "") {
   if (typeof markdown !== "string") return [];
   return stripMarkdownFences(markdown)
@@ -1814,7 +1824,7 @@ function parseTelephonicPitchMarkdown(markdown = "", fallbackPersona = {}) {
     scriptLines = [inlineScript].concat(scriptLines);
   }
 
-  const script = trimEmailBodyLines(scriptLines).join("\n").trim();
+  const script = cleanModelText(trimEmailBodyLines(scriptLines).join("\n"));
 
   return {
     personaName: personaName || fallbackPersona.name || "",
@@ -3206,6 +3216,20 @@ async function persistHistoryEntry(storageKey, entry, limit = 25) {
   return entry;
 }
 
+async function createResearchHistoryEntry(request = {}) {
+  const entry = {
+    id: Date.now().toString(),
+    createdAt: new Date().toISOString(),
+    request: {
+      company: request.company || "",
+      location: request.location || "",
+      product: request.product || "",
+    },
+    result: null,
+  };
+  return await persistHistoryEntry(RESEARCH_HISTORY_KEY, entry);
+}
+
 function shouldPersistResearchHistory(result) {
   if (!result || typeof result !== "object") return false;
   if (typeof result.brief_html === "string" && result.brief_html.trim()) return true;
@@ -3488,36 +3512,41 @@ function normalizeTelephonicPitchEntry(pitch, idx, personas) {
 
   if (!pitch) return base;
   if (typeof pitch === "string") {
-    base.script = pitch;
+    base.script = cleanModelText(pitch);
     return base;
   }
   if (typeof pitch !== "object") {
     return base;
   }
 
-  base.personaName = pitch.persona_name || pitch.name || base.personaName;
-  base.personaDesignation = pitch.designation || pitch.persona_designation || base.personaDesignation;
-  base.personaDepartment = pitch.department || pitch.persona_department || base.personaDepartment;
-  base.callGoal = pitch.call_goal || pitch.callGoal || pitch.call_objective || pitch.goal || base.callGoal;
-  base.opener = pitch.opener || pitch.opening || pitch.opening_hook || pitch.hook || base.opener;
+  base.personaName = cleanModelText(pitch.persona_name || pitch.name || base.personaName);
+  base.personaDesignation = cleanModelText(pitch.designation || pitch.persona_designation || base.personaDesignation);
+  base.personaDepartment = cleanModelText(pitch.department || pitch.persona_department || base.personaDepartment);
+  base.callGoal = cleanModelText(pitch.call_goal || pitch.callGoal || pitch.call_objective || pitch.goal || base.callGoal);
+  base.opener = cleanModelText(pitch.opener || pitch.opening || pitch.opening_hook || pitch.hook || base.opener);
 
   if (Array.isArray(pitch.discovery_questions) && pitch.discovery_questions.length) {
-    base.discoveryQuestion = pitch.discovery_questions.join(" / ");
+    base.discoveryQuestion = cleanModelText(pitch.discovery_questions.join(" / "));
   } else {
-    base.discoveryQuestion =
-      pitch.discovery_question || pitch.discoveryQuestion || pitch.question || base.discoveryQuestion;
+    base.discoveryQuestion = cleanModelText(
+      pitch.discovery_question || pitch.discoveryQuestion || pitch.question || base.discoveryQuestion
+    );
   }
 
-  base.valueStatement =
-    pitch.value_statement || pitch.valueStatement || pitch.value_pitch || pitch.value || base.valueStatement;
-  base.proofPoint =
+  base.valueStatement = cleanModelText(
+    pitch.value_statement || pitch.valueStatement || pitch.value_pitch || pitch.value || base.valueStatement
+  );
+  base.proofPoint = cleanModelText(
     pitch.proof_point ||
-    pitch.proofPoint ||
-    pitch.credibility_statement ||
-    pitch.social_proof ||
-    base.proofPoint;
-  base.cta = pitch.cta || pitch.closing_prompt || pitch.next_step || pitch.closing || base.cta;
-  base.script = pitch.full_pitch || pitch.fullPitch || pitch.pitch || pitch.call_script || pitch.script || base.script;
+      pitch.proofPoint ||
+      pitch.credibility_statement ||
+      pitch.social_proof ||
+      base.proofPoint
+  );
+  base.cta = cleanModelText(pitch.cta || pitch.closing_prompt || pitch.next_step || pitch.closing || base.cta);
+  base.script = cleanModelText(
+    pitch.full_pitch || pitch.fullPitch || pitch.pitch || pitch.call_script || pitch.script || base.script
+  );
 
   if (!base.script) {
     const fallbackLines = [
@@ -3529,7 +3558,7 @@ function normalizeTelephonicPitchEntry(pitch, idx, personas) {
     ]
       .filter(Boolean)
       .join("\n");
-    base.script = fallbackLines;
+    base.script = cleanModelText(fallbackLines);
   }
 
   return base;
@@ -3662,8 +3691,8 @@ async function generateTelephonicPitchScripts({ personas, company, location, pro
 
     try {
       const teleResp = await callLlmWithRetry(prompt, {
-        model: LLAMA_33_MODEL,
-        secondaryModel: LLAMA_33_MODEL,
+        model: TELE_PITCH_MODEL,
+        secondaryModel: TELE_PITCH_MODEL,
         generationConfig,
       });
 
@@ -3952,8 +3981,8 @@ async function revisePersonaPitch({ persona, pitch, company, product, location, 
     });
 
     const resp = await callLlmWithRetry(prompt, {
-      model: LLAMA_33_MODEL,
-      secondaryModel: LLAMA_33_MODEL,
+      model: TELE_PITCH_MODEL,
+      secondaryModel: TELE_PITCH_MODEL,
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: 12000,
@@ -4810,6 +4839,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             runId: req.runId,
             modules: req.modules,
           };
+          const historyId = typeof req.historyId === "string" ? req.historyId : "";
           const startTs = Date.now();
           let result = null;
           let success = false;
@@ -4822,7 +4852,14 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           }
 
           if (shouldPersistResearchHistory(result)) {
-            await saveResearchHistoryEntry(payload, result);
+            if (historyId) {
+              const updateResult = await updateResearchHistoryEntry(historyId, result);
+              if (!updateResult?.ok) {
+                await saveResearchHistoryEntry(payload, result);
+              }
+            } else {
+              await saveResearchHistoryEntry(payload, result);
+            }
           }
 
           const metric = buildResearchCycleMetric({
@@ -4904,6 +4941,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         if (req.action === "updateResearchHistoryEntry") {
           const updateResult = await updateResearchHistoryEntry(req.id, req.result || {});
           sendResponse(updateResult);
+          return;
+        }
+        if (req.action === "createResearchHistoryEntry") {
+          try {
+            const entry = await createResearchHistoryEntry(req.request || {});
+            sendResponse({ ok: true, id: entry?.id || "", entry });
+          } catch (err) {
+            sendResponse({ ok: false, error: err?.message || String(err) });
+          }
           return;
         }
         if (req.action === "renameHistoryEntry") {

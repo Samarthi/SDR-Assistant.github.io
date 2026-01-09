@@ -739,18 +739,18 @@ if (systemThemeMedia?.addEventListener) {
 
 applyTheme(themePreference);
 const themePreferenceLoadPromise = loadThemePreferenceFromStorage();
-const llmSettingsLoadPromise = chrome.storage.local
-  .get([
-    LLM_PROVIDER_STORAGE_KEY,
-    LLM_MODEL_STORAGE_KEY,
-    GEMINI_KEY_STORAGE_KEY,
-    GROQ_KEY_STORAGE_KEY,
-    GEMINI_KEYS_STORAGE_KEY,
-    GROQ_KEYS_STORAGE_KEY,
-    GEMINI_ACTIVE_KEY_STORAGE_KEY,
-    GROQ_ACTIVE_KEY_STORAGE_KEY,
-  ])
-  .then((data) => {
+async function loadLlmSettingsFromStorage() {
+  try {
+    const data = await chrome.storage.local.get([
+      LLM_PROVIDER_STORAGE_KEY,
+      LLM_MODEL_STORAGE_KEY,
+      GEMINI_KEY_STORAGE_KEY,
+      GROQ_KEY_STORAGE_KEY,
+      GEMINI_KEYS_STORAGE_KEY,
+      GROQ_KEYS_STORAGE_KEY,
+      GEMINI_ACTIVE_KEY_STORAGE_KEY,
+      GROQ_ACTIVE_KEY_STORAGE_KEY,
+    ]);
     const geminiKeys = normalizeKeyList(data && data[GEMINI_KEYS_STORAGE_KEY], data && data[GEMINI_KEY_STORAGE_KEY], 'gemini');
     const groqKeys = normalizeKeyList(data && data[GROQ_KEYS_STORAGE_KEY], data && data[GROQ_KEY_STORAGE_KEY], 'groq');
     const geminiActiveKeyId = resolveActiveKeyId(geminiKeys, data && data[GEMINI_ACTIVE_KEY_STORAGE_KEY]);
@@ -780,17 +780,30 @@ const llmSettingsLoadPromise = chrome.storage.local
       apiKeyInput.value = provider === LLMProvider.GROQ ? groqKey : geminiKey;
     }
     return { provider, model, geminiKey, groqKey, geminiKeys, groqKeys, geminiActiveKeyId, groqActiveKeyId };
-  })
-  .catch(() => ({
-    provider: LLMProvider.GEMINI,
-    model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
-    geminiKey: '',
-    groqKey: '',
-    geminiKeys: [],
-    groqKeys: [],
-    geminiActiveKeyId: '',
-    groqActiveKeyId: '',
-  }));
+  } catch (err) {
+    cachedGeminiKeys = [];
+    cachedGroqKeys = [];
+    cachedGeminiActiveKeyId = '';
+    cachedGroqActiveKeyId = '';
+    cachedLlmProvider = LLMProvider.GEMINI;
+    cachedLlmModel = DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
+    if (apiKeyInput) {
+      apiKeyInput.value = '';
+    }
+    return {
+      provider: LLMProvider.GEMINI,
+      model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
+      geminiKey: '',
+      groqKey: '',
+      geminiKeys: [],
+      groqKeys: [],
+      geminiActiveKeyId: '',
+      groqActiveKeyId: '',
+    };
+  }
+}
+
+const llmSettingsLoadPromise = loadLlmSettingsFromStorage();
 const briefModulesLoadPromise = chrome.storage.local
   .get([BRIEF_MODULES_STORAGE_KEY])
   .then((data) => {
@@ -2084,6 +2097,21 @@ async function runBriefGeneration(request) {
   startBriefProgress(runId, 'Loading docs...', totalSteps);
   prepareResultShell(modules);
   currentHistoryId = null;
+  let historyId = '';
+
+  try {
+    const historyResp = await sendMessagePromise({
+      action: 'createResearchHistoryEntry',
+      request: { company, location, product },
+    });
+    historyId = historyResp?.id || '';
+    if (historyId) {
+      currentHistoryId = historyId;
+      loadHistory({ selectEntryId: historyId, autoShow: false, updateForm: false, statusText: '' });
+    }
+  } catch (err) {
+    console.warn('Failed to create history entry', err);
+  }
 
   try {
     await loadStoredDocs();
@@ -2113,6 +2141,7 @@ async function runBriefGeneration(request) {
       docs,
       runId,
       modules,
+      historyId,
     });
     if (!result) {
       resetBriefProgress();
@@ -2147,7 +2176,11 @@ async function runBriefGeneration(request) {
       setBriefStatusMessage('Done.', { error: false });
     }
     resetBriefProgress();
-    loadHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
+    if (historyId) {
+      loadHistory({ selectEntryId: historyId, autoShow: false, updateForm: false, statusText: '' });
+    } else {
+      loadHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
+    }
   } catch (err) {
     resetBriefProgress();
     setBriefStatusMessage('Error: ' + (err?.message || err), { error: true });
@@ -3987,7 +4020,7 @@ document.addEventListener('keydown', (evt) => {
 });
 
 function openSettingsModal(options = {}) {
-  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, llmSettingsLoadPromise]).finally(() => {
+  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, loadLlmSettingsFromStorage()]).finally(() => {
     openModal({
       title: 'Settings',
       render: (ctx) => renderSettingsModal(ctx, options),
@@ -5090,7 +5123,9 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
     errorEl.style.display = 'none';
     errorEl.textContent = '';
 
-    const provider = selectedProvider === LLMProvider.GROQ ? LLMProvider.GROQ : LLMProvider.GEMINI;
+    const provider = selectedProvider === LLMProvider.ALL
+      ? LLMProvider.ALL
+      : (selectedProvider === LLMProvider.GROQ ? LLMProvider.GROQ : LLMProvider.GEMINI);
     const model = coerceModelForProvider(
       provider,
       normalizeLlmModel(cachedLlmModel || DEFAULT_LLM_MODELS[provider] || '', provider),
@@ -5126,6 +5161,7 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
       if (keysToRemove.length) {
         await chrome.storage.local.remove(keysToRemove);
       }
+      await loadLlmSettingsFromStorage();
       if (pitchingCompany) {
         await chrome.storage.local.set({ [PITCH_FROM_COMPANY_KEY]: pitchingCompany });
         cachedPitchingCompany = pitchingCompany;
@@ -6574,34 +6610,55 @@ function formatEmailDraftText(draft = {}) {
   return [subject, body].filter(Boolean).join('\n\n');
 }
 
+function stripControlChars(text = '') {
+  if (typeof text !== 'string') return '';
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/\uFFFD/g, '');
+}
+
+function cleanDisplayText(text = '') {
+  return stripControlChars(typeof text === 'string' ? text : '').trim();
+}
+
 function formatTelephonicPitchText(pitch = {}) {
   if (!pitch || typeof pitch !== 'object') return '';
   const sections = [];
-  const callGoal = typeof pitch.callGoal === 'string' ? pitch.callGoal.trim() : (typeof pitch.call_goal === 'string' ? pitch.call_goal.trim() : '');
+  const callGoal = cleanDisplayText(
+    typeof pitch.callGoal === 'string' ? pitch.callGoal : (typeof pitch.call_goal === 'string' ? pitch.call_goal : '')
+  );
   if (callGoal) sections.push(`Call Goal: ${callGoal}`);
-  const opener = typeof pitch.opener === 'string' ? pitch.opener.trim() : '';
+  const opener = cleanDisplayText(typeof pitch.opener === 'string' ? pitch.opener : '');
   if (opener) sections.push(`Opener: ${opener}`);
-  const discovery = typeof pitch.discoveryQuestion === 'string'
-    ? pitch.discoveryQuestion.trim()
-    : (typeof pitch.discovery_question === 'string' ? pitch.discovery_question.trim() : '');
+  const discovery = cleanDisplayText(
+    typeof pitch.discoveryQuestion === 'string'
+      ? pitch.discoveryQuestion
+      : (typeof pitch.discovery_question === 'string' ? pitch.discovery_question : '')
+  );
   if (discovery) sections.push(`Discovery: ${discovery}`);
-  const valueStatement = typeof pitch.valueStatement === 'string'
-    ? pitch.valueStatement.trim()
-    : (typeof pitch.value_statement === 'string' ? pitch.value_statement.trim() : '');
+  const valueStatement = cleanDisplayText(
+    typeof pitch.valueStatement === 'string'
+      ? pitch.valueStatement
+      : (typeof pitch.value_statement === 'string' ? pitch.value_statement : '')
+  );
   if (valueStatement) sections.push(`Value Statement: ${valueStatement}`);
-  const proof = typeof pitch.proofPoint === 'string'
-    ? pitch.proofPoint.trim()
-    : (typeof pitch.proof_point === 'string' ? pitch.proof_point.trim() : '');
+  const proof = cleanDisplayText(
+    typeof pitch.proofPoint === 'string'
+      ? pitch.proofPoint
+      : (typeof pitch.proof_point === 'string' ? pitch.proof_point : '')
+  );
   if (proof) sections.push(`Proof Point: ${proof}`);
-  const cta = typeof pitch.cta === 'string'
-    ? pitch.cta.trim()
-    : (typeof pitch.closingPrompt === 'string'
-      ? pitch.closingPrompt.trim()
-      : (typeof pitch.closing_prompt === 'string' ? pitch.closing_prompt.trim() : ''));
+  const cta = cleanDisplayText(
+    typeof pitch.cta === 'string'
+      ? pitch.cta
+      : (typeof pitch.closingPrompt === 'string'
+        ? pitch.closingPrompt
+        : (typeof pitch.closing_prompt === 'string' ? pitch.closing_prompt : ''))
+  );
   if (cta) sections.push(`CTA: ${cta}`);
-  const script = typeof pitch.script === 'string'
-    ? pitch.script.trim()
-    : (typeof pitch.full_pitch === 'string' ? pitch.full_pitch.trim() : '');
+  const script = cleanDisplayText(
+    typeof pitch.script === 'string'
+      ? pitch.script
+      : (typeof pitch.full_pitch === 'string' ? pitch.full_pitch : '')
+  );
   if (script) {
     if (sections.length) sections.push('');
     sections.push(script);

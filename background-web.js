@@ -730,8 +730,12 @@ function translateToolsToGemini(tools, options = {}) {
 
   const functionDeclarations = [];
   let wantsSearch = false;
+  let wantsMaps = false;
   const addSearch = () => {
     wantsSearch = true;
+  };
+  const addMaps = () => {
+    wantsMaps = true;
   };
 
   if (Array.isArray(tools) && tools.length) {
@@ -749,6 +753,9 @@ function translateToolsToGemini(tools, options = {}) {
         if (tool.type === "browser_search" || tool.type === "web_search") {
           addSearch();
         }
+        if (tool.type === "google_maps" || tool.type === "maps") {
+          addMaps();
+        }
       });
     } else {
       tools.forEach((tool) => {
@@ -759,8 +766,11 @@ function translateToolsToGemini(tools, options = {}) {
         const hasGoogleMaps =
           Object.prototype.hasOwnProperty.call(tool, "googleMaps") ||
           Object.prototype.hasOwnProperty.call(tool, "google_maps");
-        if (hasGoogleSearch || hasGoogleMaps) {
+        if (hasGoogleSearch) {
           addSearch();
+        }
+        if (hasGoogleMaps) {
+          addMaps();
         }
       });
     }
@@ -773,6 +783,9 @@ function translateToolsToGemini(tools, options = {}) {
       if (normalized === "web_search" || normalized === "browser_search" || normalized === "google_search") {
         addSearch();
       }
+      if (normalized === "google_maps" || normalized === "maps") {
+        addMaps();
+      }
     });
   }
 
@@ -782,6 +795,9 @@ function translateToolsToGemini(tools, options = {}) {
   }
   if (wantsSearch) {
     geminiTools.push({ googleSearch: {} });
+  }
+  if (wantsMaps) {
+    geminiTools.push({ googleMaps: {} });
   }
 
   const toolConfig = functionDeclarations.length
@@ -4086,6 +4102,82 @@ async function fetchHqRevenueAndSector({ company, locationHint, product, docsTex
   }
 
   try {
+    const settings = await loadLlmSettings();
+    const resolvedProvider = normalizeLlmProvider(
+      settings.provider,
+      settings.geminiKeys.length > 0,
+      settings.groqKeys.length > 0
+    );
+
+    if (resolvedProvider === LLMProvider.ALL) {
+      const geminiModel = coerceModelForProvider(LLMProvider.GEMINI, settings.model || DEFAULT_LLM_MODELS[LLMProvider.GEMINI]);
+      const providerSettings = { ...settings, model: geminiModel };
+
+      const hqPrompt = `You are a helpful assistant. Use Google Maps to find the official headquarters location for the company, respecting the location hint if applicable.
+Company: ${company}
+Location hint: ${normalizedLocationHint || "None provided (use global HQ)"}
+Product: ${product || "N/A"}
+
+Context docs (first 4000 chars each):
+${docsText || "(no docs provided)"}
+
+Return markdown only with exactly one line (no headings, no code fences):
+HQ Location: City/Town, State/Region, Country`;
+
+      const revenuePrompt = `You are a helpful assistant. Using live web search, return realistic revenue and primary industry sector for the company.
+Company: ${company}
+Location hint: ${normalizedLocationHint || "None provided (use global HQ)"}
+Product: ${product || "N/A"}
+
+Context docs (first 4000 chars each):
+${docsText || "(no docs provided)"}
+
+Return markdown only with exactly two lines (no headings, no code fences):
+Revenue: realistic revenue string or "Unknown"
+Sector: primary industry sector`;
+
+      const [hqResp, revenueResp] = await Promise.all([
+        callGeminiWithRetry(hqPrompt, {
+          model: geminiModel,
+          tools: [{ google_maps: {} }],
+          toolChoice: "any",
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 200,
+          },
+        }, providerSettings),
+        callGeminiWithRetry(revenuePrompt, {
+          model: geminiModel,
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 300,
+          },
+        }, providerSettings),
+      ]);
+
+      const errors = [];
+      if (hqResp?.error) errors.push(`hq: ${hqResp.error}`);
+      if (revenueResp?.error) errors.push(`revenue_sector: ${revenueResp.error}`);
+
+      const hqText = typeof hqResp?.text === "string" ? hqResp.text : "";
+      const revenueText = typeof revenueResp?.text === "string" ? revenueResp.text : "";
+      const hqLocation = parseHqLocationMarkdown(hqText);
+      const revParsed = parseRevenueSectorMarkdown(revenueText, company);
+
+      const overview = {
+        company_name: company,
+        hq_location: hqLocation || "",
+        revenue_estimate: revParsed.revenue_estimate || "",
+        industry_sector: revParsed.industry_sector || "",
+      };
+
+      const rawText = [hqText, revenueText].filter(Boolean).join("\n\n---\n\n");
+      const missingAll = !overview.hq_location && !overview.revenue_estimate && !overview.industry_sector;
+      const error = missingAll ? "Model did not return HQ, revenue, or sector." : errors.join(" | ");
+
+      return { overview, rawText, error };
+    }
+
     const resp = await callLlmWithRetry(prompt, {
       model: GROQ_COMPOUND_MINI_MODEL,
       secondaryModel: GROQ_COMPOUND_MINI_MODEL,

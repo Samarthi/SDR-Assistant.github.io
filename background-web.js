@@ -2416,6 +2416,7 @@ queueResearchHistoryMigration();
 
 function queueResearchHistoryMigration() {
   migrateResearchHistoryToIdb().catch(() => {});
+  migrateTargetHistoryToIdb().catch(() => {});
 }
 
 function normalizeTargetCompanies(rawList = []) {
@@ -3221,10 +3222,12 @@ async function persistHistoryEntry(storageKey, entry, limit = 25) {
 }
 
 const HISTORY_DB_NAME = "sdr-assistant-history";
-const HISTORY_DB_VERSION = 1;
+const HISTORY_DB_VERSION = 2;
 const HISTORY_STORE_NAME = "researchHistory";
+const TARGET_HISTORY_STORE_NAME = "targetHistory";
 let historyDbPromise = null;
 let historyMigrationPromise = null;
+let targetHistoryMigrationPromise = null;
 
 function isHistoryIdbSupported() {
   return typeof indexedDB !== "undefined";
@@ -3252,6 +3255,10 @@ function openHistoryDb() {
       const db = request.result;
       if (!db.objectStoreNames.contains(HISTORY_STORE_NAME)) {
         const store = db.createObjectStore(HISTORY_STORE_NAME, { keyPath: "id" });
+        store.createIndex("createdAt", "createdAt");
+      }
+      if (!db.objectStoreNames.contains(TARGET_HISTORY_STORE_NAME)) {
+        const store = db.createObjectStore(TARGET_HISTORY_STORE_NAME, { keyPath: "id" });
         store.createIndex("createdAt", "createdAt");
       }
     };
@@ -3290,6 +3297,11 @@ async function readLocalResearchHistory() {
   return Array.isArray(data[RESEARCH_HISTORY_KEY]) ? data[RESEARCH_HISTORY_KEY] : [];
 }
 
+async function readLocalTargetHistory() {
+  const data = await chrome.storage.local.get([TARGET_HISTORY_KEY]);
+  return Array.isArray(data[TARGET_HISTORY_KEY]) ? data[TARGET_HISTORY_KEY] : [];
+}
+
 async function migrateResearchHistoryToIdb() {
   if (!isHistoryIdbSupported()) return { ok: false, error: "IndexedDB unavailable" };
   if (historyMigrationPromise) return historyMigrationPromise;
@@ -3316,6 +3328,34 @@ async function migrateResearchHistoryToIdb() {
     return { ok: false, error: err?.message || String(err) };
   });
   return historyMigrationPromise;
+}
+
+async function migrateTargetHistoryToIdb() {
+  if (!isHistoryIdbSupported()) return { ok: false, error: "IndexedDB unavailable" };
+  if (targetHistoryMigrationPromise) return targetHistoryMigrationPromise;
+  targetHistoryMigrationPromise = (async () => {
+    const db = await getHistoryDb();
+    if (!db) return { ok: false, error: "History DB unavailable" };
+    const history = await readLocalTargetHistory();
+    if (!history.length) return { ok: true, migrated: 0 };
+
+    const tx = db.transaction(TARGET_HISTORY_STORE_NAME, "readwrite");
+    const store = tx.objectStore(TARGET_HISTORY_STORE_NAME);
+    history.forEach((entry) => {
+      try {
+        store.put(entry);
+      } catch (err) {
+        console.warn("Failed to migrate target history entry", err);
+      }
+    });
+    await transactionToPromise(tx);
+    await chrome.storage.local.remove([TARGET_HISTORY_KEY]);
+    return { ok: true, migrated: history.length };
+  })().catch((err) => {
+    console.warn("Failed to migrate target history to IndexedDB", err);
+    return { ok: false, error: err?.message || String(err) };
+  });
+  return targetHistoryMigrationPromise;
 }
 
 async function readResearchHistoryFromIdb(db) {
@@ -3346,12 +3386,54 @@ async function readResearchHistoryFromIdb(db) {
   return entries;
 }
 
+async function readTargetHistoryFromIdb(db) {
+  const tx = db.transaction(TARGET_HISTORY_STORE_NAME, "readonly");
+  const store = tx.objectStore(TARGET_HISTORY_STORE_NAME);
+  let entries = [];
+  if (typeof store.getAll === "function") {
+    entries = await requestToPromise(store.getAll());
+    await transactionToPromise(tx);
+    return entries || [];
+  }
+
+  entries = [];
+  await new Promise((resolve, reject) => {
+    const cursorReq = store.openCursor();
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (cursor) {
+        entries.push(cursor.value);
+        cursor.continue();
+      } else {
+        resolve();
+      }
+    };
+    cursorReq.onerror = () => reject(cursorReq.error || new Error("Failed to read target history cursor"));
+  });
+  await transactionToPromise(tx);
+  return entries;
+}
+
 async function trimResearchHistoryInIdb(db, limit = 25) {
   const entries = sortHistoryEntries(await readResearchHistoryFromIdb(db));
   if (entries.length <= limit) return;
   const excess = entries.slice(limit);
   const tx = db.transaction(HISTORY_STORE_NAME, "readwrite");
   const store = tx.objectStore(HISTORY_STORE_NAME);
+  excess.forEach((entry) => {
+    if (entry && entry.id) {
+      store.delete(entry.id);
+    }
+  });
+  await transactionToPromise(tx);
+}
+
+async function trimTargetHistoryInIdb(db, limit = 25) {
+  const entries = sortHistoryEntries(await readTargetHistoryFromIdb(db));
+  if (entries.length <= limit) return;
+  const excess = entries.slice(limit);
+  const tx = db.transaction(TARGET_HISTORY_STORE_NAME, "readwrite");
+  const store = tx.objectStore(TARGET_HISTORY_STORE_NAME);
   excess.forEach((entry) => {
     if (entry && entry.id) {
       store.delete(entry.id);
@@ -3372,6 +3454,18 @@ async function listResearchHistoryEntries() {
   }
 }
 
+async function listTargetHistoryEntries() {
+  const db = await getHistoryDb();
+  if (!db) return await readLocalTargetHistory();
+  await migrateTargetHistoryToIdb();
+  try {
+    return await readTargetHistoryFromIdb(db);
+  } catch (err) {
+    console.warn("Failed to read target history from IndexedDB; falling back", err);
+    return await readLocalTargetHistory();
+  }
+}
+
 async function addResearchHistoryEntry(entry, limit = 25) {
   const db = await getHistoryDb();
   if (!db) return await persistHistoryEntry(RESEARCH_HISTORY_KEY, entry, limit);
@@ -3381,6 +3475,18 @@ async function addResearchHistoryEntry(entry, limit = 25) {
   store.put(entry);
   await transactionToPromise(tx);
   await trimResearchHistoryInIdb(db, limit);
+  return entry;
+}
+
+async function addTargetHistoryEntry(entry, limit = 25) {
+  const db = await getHistoryDb();
+  if (!db) return await persistHistoryEntry(TARGET_HISTORY_KEY, entry, limit);
+  await migrateTargetHistoryToIdb();
+  const tx = db.transaction(TARGET_HISTORY_STORE_NAME, "readwrite");
+  const store = tx.objectStore(TARGET_HISTORY_STORE_NAME);
+  store.put(entry);
+  await transactionToPromise(tx);
+  await trimTargetHistoryInIdb(db, limit);
   return entry;
 }
 
@@ -3417,12 +3523,40 @@ async function updateResearchHistoryEntryInIdb(id, updater) {
   return updated;
 }
 
+async function updateTargetHistoryEntryInIdb(id, updater) {
+  const db = await getHistoryDb();
+  if (!db) return null;
+  await migrateTargetHistoryToIdb();
+  const tx = db.transaction(TARGET_HISTORY_STORE_NAME, "readwrite");
+  const store = tx.objectStore(TARGET_HISTORY_STORE_NAME);
+  const existing = await requestToPromise(store.get(id));
+  if (!existing) {
+    await transactionToPromise(tx);
+    return null;
+  }
+  const updated = typeof updater === "function" ? updater(existing) : updater;
+  store.put(updated);
+  await transactionToPromise(tx);
+  return updated;
+}
+
 async function deleteResearchHistoryEntryInIdb(id) {
   const db = await getHistoryDb();
   if (!db) return false;
   await migrateResearchHistoryToIdb();
   const tx = db.transaction(HISTORY_STORE_NAME, "readwrite");
   const store = tx.objectStore(HISTORY_STORE_NAME);
+  store.delete(id);
+  await transactionToPromise(tx);
+  return true;
+}
+
+async function deleteTargetHistoryEntryInIdb(id) {
+  const db = await getHistoryDb();
+  if (!db) return false;
+  await migrateTargetHistoryToIdb();
+  const tx = db.transaction(TARGET_HISTORY_STORE_NAME, "readwrite");
+  const store = tx.objectStore(TARGET_HISTORY_STORE_NAME);
   store.delete(id);
   await transactionToPromise(tx);
   return true;
@@ -3551,6 +3685,19 @@ async function renameHistoryEntry(storageKey, id, title) {
       });
       if (updated) return { ok: true, entry: updated };
     }
+    if (storageKey === TARGET_HISTORY_KEY) {
+      const updated = await updateTargetHistoryEntryInIdb(id, (existing) => {
+        const normalizedTitle = typeof title === "string" ? title.trim() : "";
+        const next = { ...(existing || {}) };
+        if (normalizedTitle) {
+          next.customTitle = normalizedTitle;
+        } else {
+          delete next.customTitle;
+        }
+        return next;
+      });
+      if (updated) return { ok: true, entry: updated };
+    }
     const data = await chrome.storage.local.get([storageKey]);
     const history = Array.isArray(data[storageKey]) ? data[storageKey] : [];
     const idx = history.findIndex((entry) => entry && entry.id === id);
@@ -3575,6 +3722,10 @@ async function deleteHistoryEntry(storageKey, id) {
   try {
     if (storageKey === RESEARCH_HISTORY_KEY) {
       const deleted = await deleteResearchHistoryEntryInIdb(id);
+      if (deleted) return { ok: true, deletedId: id };
+    }
+    if (storageKey === TARGET_HISTORY_KEY) {
+      const deleted = await deleteTargetHistoryEntryInIdb(id);
       if (deleted) return { ok: true, deletedId: id };
     }
     const data = await chrome.storage.local.get([storageKey]);
@@ -3623,7 +3774,7 @@ async function saveTargetHistoryEntry(request, result) {
       },
     };
 
-    return await persistHistoryEntry(TARGET_HISTORY_KEY, entry);
+    return await addTargetHistoryEntry(entry);
   } catch (err) {
     console.warn("Failed to persist target history", err);
     return null;
@@ -5200,8 +5351,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           return;
         }
         if (req.action === 'getTargetHistory') {
-          const data = await chrome.storage.local.get([TARGET_HISTORY_KEY]);
-          const history = Array.isArray(data[TARGET_HISTORY_KEY]) ? data[TARGET_HISTORY_KEY] : [];
+          const history = await listTargetHistoryEntries();
           sendResponse({ history });
           return;
         }

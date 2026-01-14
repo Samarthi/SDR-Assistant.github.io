@@ -132,10 +132,16 @@ const SIDEBAR_ICON_HTML = '<span class="sidebar-icon" aria-hidden="true"></span>
 const LLMProvider = {
   GEMINI: 'gemini',
   GROQ: 'groq',
+  ALL: 'all',
 };
 const LLM_PROVIDER_STORAGE_KEY = 'llmProvider';
 const LLM_MODEL_STORAGE_KEY = 'llmModel';
+const GEMINI_KEY_STORAGE_KEY = 'geminiKey';
 const GROQ_KEY_STORAGE_KEY = 'groqKey';
+const GEMINI_KEYS_STORAGE_KEY = 'geminiKeys';
+const GROQ_KEYS_STORAGE_KEY = 'groqKeys';
+const GEMINI_ACTIVE_KEY_STORAGE_KEY = 'geminiActiveKeyId';
+const GROQ_ACTIVE_KEY_STORAGE_KEY = 'groqActiveKeyId';
 const GROQ_COMPOUND_MINI_MODEL = 'groq/compound-mini';
 const DEFAULT_LLM_MODELS = {
   [LLMProvider.GEMINI]: 'gemini-2.5-flash',
@@ -259,8 +265,10 @@ const selectedDocsByMode = {
 };
 const briefProgressState = { runId: null, total: 0, current: 0 };
 let themePreference = ThemePreference.SYSTEM;
-let cachedGeminiKey = '';
-let cachedGroqKey = '';
+let cachedGeminiKeys = [];
+let cachedGroqKeys = [];
+let cachedGeminiActiveKeyId = '';
+let cachedGroqActiveKeyId = '';
 let cachedLlmProvider = LLMProvider.GEMINI;
 let cachedLlmModel = DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
 let cachedPitchingCompany = '';
@@ -558,7 +566,7 @@ function openBriefSectionsModal(options = {}) {
 }
 
 function normalizeLlmProvider(provider, hasGeminiKey, hasGroqKey) {
-  if (provider === LLMProvider.GEMINI || provider === LLMProvider.GROQ) return provider;
+  if (provider === LLMProvider.GEMINI || provider === LLMProvider.GROQ || provider === LLMProvider.ALL) return provider;
   if (hasGroqKey) return LLMProvider.GROQ;
   if (hasGeminiKey) return LLMProvider.GEMINI;
   return LLMProvider.GROQ;
@@ -586,6 +594,74 @@ function coerceModelForProvider(provider, model) {
     return lower.startsWith('gemini') ? fallback : normalized;
   }
   return fallback;
+}
+
+function createKeyId(prefix, value) {
+  if (!value) return `${prefix}-${Date.now()}`;
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  const suffix = Math.abs(hash).toString(16);
+  return `${prefix}-${suffix}`;
+}
+
+function normalizeKeyEntry(entry, prefix = 'key') {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const value = entry.trim();
+    if (!value) return null;
+    return { id: createKeyId(prefix, value), value, label: '' };
+  }
+  if (typeof entry !== 'object') return null;
+  const valueRaw = typeof entry.value === 'string'
+    ? entry.value
+    : (typeof entry.key === 'string' ? entry.key : '');
+  const value = valueRaw.trim();
+  if (!value) return null;
+  const id = typeof entry.id === 'string' && entry.id.trim()
+    ? entry.id.trim()
+    : createKeyId(prefix, value);
+  const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+  return { id, value, label };
+}
+
+function normalizeKeyList(list, legacyValue, prefix = 'key') {
+  const normalized = [];
+  const seen = new Set();
+  const addEntry = (entry) => {
+    const normalizedEntry = normalizeKeyEntry(entry, prefix);
+    if (!normalizedEntry || !normalizedEntry.value) return;
+    if (seen.has(normalizedEntry.value)) return;
+    seen.add(normalizedEntry.value);
+    normalized.push(normalizedEntry);
+  };
+  if (Array.isArray(list)) {
+    list.forEach(addEntry);
+  }
+  if (typeof legacyValue === 'string' && legacyValue.trim()) {
+    addEntry(legacyValue.trim());
+  }
+  return normalized;
+}
+
+function resolveActiveKeyId(keys, storedId) {
+  if (storedId && keys.some((key) => key.id === storedId)) return storedId;
+  return keys[0] ? keys[0].id : '';
+}
+
+function resolveActiveKey(keys, storedId) {
+  if (!Array.isArray(keys) || !keys.length) return null;
+  if (storedId) {
+    const match = keys.find((key) => key.id === storedId);
+    if (match) return match;
+  }
+  return keys[0];
+}
+
+function resolveActiveKeyValue(keys, storedId) {
+  const active = resolveActiveKey(keys, storedId);
+  return active && typeof active.value === 'string' ? active.value : '';
 }
 
 function normalizeThemePreference(value) {
@@ -663,12 +739,29 @@ if (systemThemeMedia?.addEventListener) {
 
 applyTheme(themePreference);
 const themePreferenceLoadPromise = loadThemePreferenceFromStorage();
-const llmSettingsLoadPromise = chrome.storage.local
-  .get([LLM_PROVIDER_STORAGE_KEY, LLM_MODEL_STORAGE_KEY, 'geminiKey', GROQ_KEY_STORAGE_KEY])
-  .then((data) => {
-    const geminiKey = data && typeof data.geminiKey === 'string' ? data.geminiKey : '';
-    const groqKey = data && typeof data[GROQ_KEY_STORAGE_KEY] === 'string' ? data[GROQ_KEY_STORAGE_KEY] : '';
-    const provider = normalizeLlmProvider(data && data[LLM_PROVIDER_STORAGE_KEY], !!geminiKey, !!groqKey);
+async function loadLlmSettingsFromStorage() {
+  try {
+    const data = await chrome.storage.local.get([
+      LLM_PROVIDER_STORAGE_KEY,
+      LLM_MODEL_STORAGE_KEY,
+      GEMINI_KEY_STORAGE_KEY,
+      GROQ_KEY_STORAGE_KEY,
+      GEMINI_KEYS_STORAGE_KEY,
+      GROQ_KEYS_STORAGE_KEY,
+      GEMINI_ACTIVE_KEY_STORAGE_KEY,
+      GROQ_ACTIVE_KEY_STORAGE_KEY,
+    ]);
+    const geminiKeys = normalizeKeyList(data && data[GEMINI_KEYS_STORAGE_KEY], data && data[GEMINI_KEY_STORAGE_KEY], 'gemini');
+    const groqKeys = normalizeKeyList(data && data[GROQ_KEYS_STORAGE_KEY], data && data[GROQ_KEY_STORAGE_KEY], 'groq');
+    const geminiActiveKeyId = resolveActiveKeyId(geminiKeys, data && data[GEMINI_ACTIVE_KEY_STORAGE_KEY]);
+    const groqActiveKeyId = resolveActiveKeyId(groqKeys, data && data[GROQ_ACTIVE_KEY_STORAGE_KEY]);
+    const geminiKey = resolveActiveKeyValue(geminiKeys, geminiActiveKeyId);
+    const groqKey = resolveActiveKeyValue(groqKeys, groqActiveKeyId);
+    const provider = normalizeLlmProvider(
+      data && data[LLM_PROVIDER_STORAGE_KEY],
+      geminiKeys.length > 0,
+      groqKeys.length > 0
+    );
     let model = coerceModelForProvider(provider, normalizeLlmModel(data && data[LLM_MODEL_STORAGE_KEY], provider));
     if (
       provider === LLMProvider.GROQ &&
@@ -677,21 +770,40 @@ const llmSettingsLoadPromise = chrome.storage.local
     ) {
       model = DEFAULT_LLM_MODELS[LLMProvider.GROQ];
     }
-    cachedGeminiKey = geminiKey;
-    cachedGroqKey = groqKey;
+    cachedGeminiKeys = geminiKeys;
+    cachedGroqKeys = groqKeys;
+    cachedGeminiActiveKeyId = geminiActiveKeyId;
+    cachedGroqActiveKeyId = groqActiveKeyId;
     cachedLlmProvider = provider;
     cachedLlmModel = model;
     if (apiKeyInput) {
       apiKeyInput.value = provider === LLMProvider.GROQ ? groqKey : geminiKey;
     }
-    return { provider, model, geminiKey, groqKey };
-  })
-  .catch(() => ({
-    provider: LLMProvider.GEMINI,
-    model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
-    geminiKey: '',
-    groqKey: '',
-  }));
+    return { provider, model, geminiKey, groqKey, geminiKeys, groqKeys, geminiActiveKeyId, groqActiveKeyId };
+  } catch (err) {
+    cachedGeminiKeys = [];
+    cachedGroqKeys = [];
+    cachedGeminiActiveKeyId = '';
+    cachedGroqActiveKeyId = '';
+    cachedLlmProvider = LLMProvider.GEMINI;
+    cachedLlmModel = DEFAULT_LLM_MODELS[LLMProvider.GEMINI];
+    if (apiKeyInput) {
+      apiKeyInput.value = '';
+    }
+    return {
+      provider: LLMProvider.GEMINI,
+      model: DEFAULT_LLM_MODELS[LLMProvider.GEMINI],
+      geminiKey: '',
+      groqKey: '',
+      geminiKeys: [],
+      groqKeys: [],
+      geminiActiveKeyId: '',
+      groqActiveKeyId: '',
+    };
+  }
+}
+
+const llmSettingsLoadPromise = loadLlmSettingsFromStorage();
 const briefModulesLoadPromise = chrome.storage.local
   .get([BRIEF_MODULES_STORAGE_KEY])
   .then((data) => {
@@ -1944,6 +2056,19 @@ function openTargetInputsModal({ focusField } = {}) {
   });
 }
 
+function hasBriefRenderData(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (typeof result.brief_html === 'string' && result.brief_html.trim()) return true;
+  if (Array.isArray(result.top_5_news) && result.top_5_news.length) return true;
+  if (Array.isArray(result.personas) && result.personas.length) return true;
+  if (Array.isArray(result.personaEmails) && result.personaEmails.length) return true;
+  if (Array.isArray(result.telephonicPitches) && result.telephonicPitches.length) return true;
+  if (typeof result.hq_location === 'string' && result.hq_location.trim()) return true;
+  if (typeof result.revenue_estimate === 'string' && result.revenue_estimate.trim()) return true;
+  if (typeof result.industry_sector === 'string' && result.industry_sector.trim()) return true;
+  return false;
+}
+
 async function runBriefGeneration(request) {
   const req = request || {};
   const company = (req.company || '').trim();
@@ -1972,6 +2097,21 @@ async function runBriefGeneration(request) {
   startBriefProgress(runId, 'Loading docs...', totalSteps);
   prepareResultShell(modules);
   currentHistoryId = null;
+  let historyId = '';
+
+  try {
+    const historyResp = await sendMessagePromise({
+      action: 'createResearchHistoryEntry',
+      request: { company, location, product },
+    });
+    historyId = historyResp?.id || '';
+    if (historyId) {
+      currentHistoryId = historyId;
+      loadHistory({ selectEntryId: historyId, autoShow: false, updateForm: false, statusText: '' });
+    }
+  } catch (err) {
+    console.warn('Failed to create history entry', err);
+  }
 
   try {
     await loadStoredDocs();
@@ -2001,13 +2141,15 @@ async function runBriefGeneration(request) {
       docs,
       runId,
       modules,
+      historyId,
     });
     if (!result) {
       resetBriefProgress();
       setBriefStatusMessage('Generation failed', { error: true });
       return;
     }
-    if (result.error) {
+    const hasRenderableResult = hasBriefRenderData(result);
+    if (result.error && !hasRenderableResult) {
       resetBriefProgress();
       setBriefStatusMessage('Error: ' + result.error, { error: true });
       return;
@@ -2034,7 +2176,11 @@ async function runBriefGeneration(request) {
       setBriefStatusMessage('Done.', { error: false });
     }
     resetBriefProgress();
-    loadHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
+    if (historyId) {
+      loadHistory({ selectEntryId: historyId, autoShow: false, updateForm: false, statusText: '' });
+    } else {
+      loadHistory({ selectLatest: true, autoShow: false, updateForm: false, statusText: '' });
+    }
   } catch (err) {
     resetBriefProgress();
     setBriefStatusMessage('Error: ' + (err?.message || err), { error: true });
@@ -2837,7 +2983,13 @@ const launchSettingsOnboarding = () => {
 };
 Promise.all([llmSettingsLoadPromise, pitchingCompanyLoadPromise])
   .then(([llmSettings, storedPitch]) => {
-    const hasKey = Boolean(llmSettings && (llmSettings.geminiKey || llmSettings.groqKey));
+    const hasKey = Boolean(
+      llmSettings &&
+      ((Array.isArray(llmSettings.geminiKeys) && llmSettings.geminiKeys.length) ||
+        (Array.isArray(llmSettings.groqKeys) && llmSettings.groqKeys.length) ||
+        llmSettings.geminiKey ||
+        llmSettings.groqKey)
+    );
     const hasPitch = Boolean(storedPitch);
     if (onboardingTarget === 'settings') {
       if (hasKey && hasPitch) {
@@ -2880,22 +3032,34 @@ heroSettingsBtn?.addEventListener('click', () => {
 saveKeyBtn?.addEventListener('click', async () => {
   const key = apiKeyInput.value.trim();
   if (!key) { status.innerText = 'API key required'; status.style.color = '#b91c1c'; return; }
-  const provider = cachedLlmProvider === LLMProvider.GROQ ? LLMProvider.GROQ : LLMProvider.GEMINI;
+  let provider = cachedLlmProvider === LLMProvider.GROQ ? LLMProvider.GROQ : LLMProvider.GEMINI;
+  if (cachedLlmProvider === LLMProvider.ALL) {
+    provider =
+      !cachedGeminiKeys.length ? LLMProvider.GEMINI :
+      !cachedGroqKeys.length ? LLMProvider.GROQ :
+      LLMProvider.GEMINI;
+  }
+  const prefix = provider === LLMProvider.GROQ ? 'groq' : 'gemini';
+  const existingKeys = provider === LLMProvider.GROQ ? cachedGroqKeys : cachedGeminiKeys;
+  const existing = existingKeys.find((entry) => entry && entry.value === key);
+  const nextEntry = existing || { id: createKeyId(prefix, key), value: key, label: '' };
+  const nextKeys = existing ? existingKeys.slice() : [...existingKeys, nextEntry];
+  const activeKeyId = nextEntry.id;
   const payload = {
     [LLM_PROVIDER_STORAGE_KEY]: provider,
     [LLM_MODEL_STORAGE_KEY]: coerceModelForProvider(provider, cachedLlmModel),
+    [provider === LLMProvider.GROQ ? GROQ_KEYS_STORAGE_KEY : GEMINI_KEYS_STORAGE_KEY]: nextKeys,
+    [provider === LLMProvider.GROQ ? GROQ_ACTIVE_KEY_STORAGE_KEY : GEMINI_ACTIVE_KEY_STORAGE_KEY]: activeKeyId,
   };
-  const keysToRemove = [];
-  if (provider === LLMProvider.GROQ) {
-    payload[GROQ_KEY_STORAGE_KEY] = key;
-    keysToRemove.push('geminiKey');
-    cachedGroqKey = key;
-  } else {
-    payload.geminiKey = key;
-    keysToRemove.push(GROQ_KEY_STORAGE_KEY);
-    cachedGeminiKey = key;
-  }
+  const keysToRemove = [GEMINI_KEY_STORAGE_KEY, GROQ_KEY_STORAGE_KEY];
   cachedLlmProvider = provider;
+  if (provider === LLMProvider.GROQ) {
+    cachedGroqKeys = nextKeys;
+    cachedGroqActiveKeyId = activeKeyId;
+  } else {
+    cachedGeminiKeys = nextKeys;
+    cachedGeminiActiveKeyId = activeKeyId;
+  }
   await chrome.storage.local.set(payload);
   if (keysToRemove.length) {
     await chrome.storage.local.remove(keysToRemove);
@@ -3856,7 +4020,7 @@ document.addEventListener('keydown', (evt) => {
 });
 
 function openSettingsModal(options = {}) {
-  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, llmSettingsLoadPromise]).finally(() => {
+  Promise.all([loadExportTemplateFromStorage(), themePreferenceLoadPromise, loadLlmSettingsFromStorage()]).finally(() => {
     openModal({
       title: 'Settings',
       render: (ctx) => renderSettingsModal(ctx, options),
@@ -4625,44 +4789,100 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
   renderBriefModuleControls(briefModuleConfig || getDefaultBriefModules(), sectionsList, { onToggle: handleSectionToggle });
   form.appendChild(sectionsSection);
 
+  const providerSection = document.createElement('div');
+  providerSection.className = 'modal-section';
+  const providerHeader = document.createElement('h4');
+  providerHeader.textContent = 'Default provider';
+  providerSection.appendChild(providerHeader);
+  const providerHelper = document.createElement('p');
+  providerHelper.className = 'modal-helper';
+  providerHelper.textContent = 'Choose the default backend, or select All to allow component-specific routing (placeholder).';
+  providerSection.appendChild(providerHelper);
+  const providerOptions = document.createElement('div');
+  providerOptions.className = 'choice-grid provider-choice-grid';
+  providerSection.appendChild(providerOptions);
+
+  let selectedProvider = cachedLlmProvider === LLMProvider.GROQ
+    ? LLMProvider.GROQ
+    : cachedLlmProvider === LLMProvider.ALL
+      ? LLMProvider.ALL
+      : LLMProvider.GEMINI;
+  const providerChoiceLabels = [];
+  const providerIcons = {
+    [LLMProvider.GEMINI]:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l1.8 4.8L19 9l-4.6 2.5L12 17l-2.4-5.5L5 9l5.2-2.2L12 2z"></path></svg>',
+    [LLMProvider.GROQ]:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l8-8 10 8-10 8-8-8z"></path></svg>',
+    [LLMProvider.ALL]:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="12" r="3"></circle><circle cx="16" cy="12" r="3"></circle><path d="M11 12h2"></path></svg>',
+  };
+  const providerPanels = {};
+  const updateProviderChoiceState = () => {
+    providerChoiceLabels.forEach((label) => {
+      const input = label.querySelector('input[type="radio"]');
+      const isActive = input?.value === selectedProvider;
+      if (input) input.checked = isActive;
+      label.classList.toggle('active', isActive);
+    });
+    Object.values(providerPanels).forEach((panel) => {
+      if (!panel) return;
+      panel.hidden = selectedProvider === LLMProvider.ALL ? false : panel.dataset.provider !== selectedProvider;
+    });
+  };
+
+  [
+    { value: LLMProvider.GEMINI, label: 'Gemini', description: 'Google Gemini (native API)' },
+    { value: LLMProvider.GROQ, label: 'Groq', description: 'Groq OpenAI-compatible API' },
+    { value: LLMProvider.ALL, label: 'All backends', description: 'Route per component (mapping placeholder)' },
+  ].forEach((option) => {
+    const label = document.createElement('label');
+    label.className = 'choice-card provider-choice';
+    label.dataset.value = option.value;
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'llmProvider';
+    radio.value = option.value;
+    radio.className = 'visually-hidden';
+    radio.checked = selectedProvider === option.value;
+    const icon = document.createElement('div');
+    icon.className = 'choice-icon';
+    icon.innerHTML = providerIcons[option.value] || providerIcons[LLMProvider.GROQ];
+    const textWrap = document.createElement('div');
+    textWrap.className = 'choice-text';
+    const title = document.createElement('div');
+    title.className = 'choice-label';
+    title.textContent = option.label;
+    const desc = document.createElement('div');
+    desc.className = 'choice-sub';
+    desc.textContent = option.description;
+    textWrap.appendChild(title);
+    textWrap.appendChild(desc);
+    label.appendChild(radio);
+    label.appendChild(icon);
+    label.appendChild(textWrap);
+    label.addEventListener('click', () => {
+      selectedProvider = option.value;
+      updateProviderChoiceState();
+    });
+    radio.addEventListener('change', () => {
+      selectedProvider = option.value;
+      updateProviderChoiceState();
+    });
+    providerChoiceLabels.push(label);
+    providerOptions.appendChild(label);
+  });
+  updateProviderChoiceState();
+  form.appendChild(providerSection);
+
   const apiSection = document.createElement('div');
   apiSection.className = 'modal-section';
   const apiHeader = document.createElement('h4');
-  apiHeader.textContent = 'Groq API key';
+  apiHeader.textContent = 'API keys';
   apiSection.appendChild(apiHeader);
   const apiHelper = document.createElement('p');
   apiHelper.className = 'modal-helper';
-  apiHelper.textContent = 'Use Groq (OpenAI-compatible). Add your API key.';
+  apiHelper.textContent = 'Store multiple keys per provider. Active keys are used first with failover on 401/429.';
   apiSection.appendChild(apiHelper);
-  const apiFlow = document.createElement('div');
-  apiFlow.className = 'api-flow';
-  const providerInstruction = document.createElement('div');
-  providerInstruction.className = 'provider-instructions';
-  const instructionTitle = document.createElement('div');
-  instructionTitle.className = 'instructions-title';
-  instructionTitle.textContent = 'Get a Groq key';
-  providerInstruction.appendChild(instructionTitle);
-  const instructionList = document.createElement('ol');
-  [
-    'Sign in to the Groq console and open the API Keys page.',
-    'Create a new key or reuse an existing one for your project.',
-    'Keys are OpenAI-compatible; paste it below to enable Groq.',
-  ].forEach((step) => {
-    const li = document.createElement('li');
-    li.textContent = step;
-    instructionList.appendChild(li);
-  });
-  providerInstruction.appendChild(instructionList);
-  const groqLink = document.createElement('a');
-  groqLink.href = 'https://console.groq.com/keys';
-  groqLink.target = '_blank';
-  groqLink.rel = 'noopener noreferrer';
-  groqLink.className = 'instruction-link';
-  groqLink.textContent = 'Open Groq console';
-  providerInstruction.appendChild(groqLink);
-
-  providerInstruction.style.marginBottom = '12px';
-  apiFlow.appendChild(providerInstruction);
 
   const eyeIcon = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z\"></path><circle cx=\"12\" cy=\"12\" r=\"3\"></circle></svg>';
   const eyeOffIcon = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.5 21.5 0 0 1 5.06-5.94\"></path><path d=\"M1 1l22 22\"></path><path d=\"M9.53 9.53a3 3 0 0 0 4.24 4.24\"></path><path d=\"M14.47 14.47 9.53 9.53\"></path></svg>';
@@ -4691,18 +4911,195 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
     return { wrapper, input };
   };
 
-  const groqKeyField = buildKeyField('Groq API key', (cachedGroqKey || '').trim());
+  const keyState = {
+    [LLMProvider.GEMINI]: {
+      keys: (cachedGeminiKeys || []).map((entry) => ({ ...entry })),
+      activeKeyId: cachedGeminiActiveKeyId,
+    },
+    [LLMProvider.GROQ]: {
+      keys: (cachedGroqKeys || []).map((entry) => ({ ...entry })),
+      activeKeyId: cachedGroqActiveKeyId,
+    },
+  };
+  keyState[LLMProvider.GEMINI].activeKeyId = resolveActiveKeyId(
+    keyState[LLMProvider.GEMINI].keys,
+    keyState[LLMProvider.GEMINI].activeKeyId
+  );
+  keyState[LLMProvider.GROQ].activeKeyId = resolveActiveKeyId(
+    keyState[LLMProvider.GROQ].keys,
+    keyState[LLMProvider.GROQ].activeKeyId
+  );
 
-  const groqKeyLabel = document.createElement('p');
-  groqKeyLabel.className = 'modal-helper';
-  groqKeyLabel.textContent = 'Groq key (OpenAI-compatible API)';
+  const createKeyRow = (provider, entry, listEl) => {
+    const state = keyState[provider];
+    const row = document.createElement('div');
+    row.className = 'key-row';
+    row.classList.toggle('is-active', state.activeKeyId === entry.id);
 
-  const groqKeyContainer = document.createElement('div');
-  groqKeyContainer.appendChild(groqKeyLabel);
-  groqKeyContainer.appendChild(groqKeyField.wrapper);
-  apiFlow.appendChild(groqKeyContainer);
-  apiSection.appendChild(apiFlow);
+    const meta = document.createElement('div');
+    meta.className = 'key-meta';
 
+    const activeLabel = document.createElement('label');
+    activeLabel.className = 'key-active';
+    const activeInput = document.createElement('input');
+    activeInput.type = 'radio';
+    activeInput.name = `${provider}-active-key`;
+    activeInput.checked = state.activeKeyId === entry.id;
+    activeInput.addEventListener('change', () => {
+      state.activeKeyId = entry.id;
+      renderKeyList(provider, listEl);
+    });
+    const activeText = document.createElement('span');
+    activeText.textContent = 'Active';
+    activeLabel.appendChild(activeInput);
+    activeLabel.appendChild(activeText);
+
+    const labelInput = document.createElement('input');
+    labelInput.type = 'text';
+    labelInput.placeholder = 'Label (optional)';
+    labelInput.className = 'key-label-input';
+    labelInput.value = entry.label || '';
+    labelInput.addEventListener('input', (evt) => {
+      entry.label = evt.target.value;
+    });
+
+    meta.appendChild(activeLabel);
+    meta.appendChild(labelInput);
+
+    const keyField = buildKeyField('API key', entry.value || '');
+    keyField.input.addEventListener('input', (evt) => {
+      entry.value = evt.target.value;
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'key-actions';
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'ghost';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => {
+      state.keys = state.keys.filter((key) => key.id !== entry.id);
+      if (state.activeKeyId === entry.id) {
+        state.activeKeyId = state.keys[0]?.id || '';
+      }
+      renderKeyList(provider, listEl);
+    });
+    actions.appendChild(removeBtn);
+
+    row.appendChild(meta);
+    row.appendChild(keyField.wrapper);
+    row.appendChild(actions);
+    listEl.appendChild(row);
+  };
+
+  const renderKeyList = (provider, listEl) => {
+    const state = keyState[provider];
+    listEl.innerHTML = '';
+    if (!state.keys.length) {
+      const empty = document.createElement('div');
+      empty.className = 'key-empty';
+      empty.textContent = 'No keys added yet.';
+      listEl.appendChild(empty);
+      return;
+    }
+    state.keys.forEach((entry) => createKeyRow(provider, entry, listEl));
+  };
+
+  const buildProviderPanel = ({ provider, title, helper, steps, linkHref, linkLabel }) => {
+    const panel = document.createElement('div');
+    panel.className = 'provider-panel';
+    panel.dataset.provider = provider;
+
+    const panelTitle = document.createElement('div');
+    panelTitle.className = 'provider-panel-title';
+    panelTitle.textContent = title;
+    panel.appendChild(panelTitle);
+
+    if (helper) {
+      const panelHelper = document.createElement('p');
+      panelHelper.className = 'modal-helper';
+      panelHelper.textContent = helper;
+      panel.appendChild(panelHelper);
+    }
+
+    const apiFlow = document.createElement('div');
+    apiFlow.className = 'api-flow';
+    const providerInstruction = document.createElement('div');
+    providerInstruction.className = 'provider-instructions';
+    const instructionTitle = document.createElement('div');
+    instructionTitle.className = 'instructions-title';
+    instructionTitle.textContent = `Get a ${title} key`;
+    providerInstruction.appendChild(instructionTitle);
+    const instructionList = document.createElement('ol');
+    steps.forEach((step) => {
+      const li = document.createElement('li');
+      li.textContent = step;
+      instructionList.appendChild(li);
+    });
+    providerInstruction.appendChild(instructionList);
+    const link = document.createElement('a');
+    link.href = linkHref;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.className = 'instruction-link';
+    link.textContent = linkLabel;
+    providerInstruction.appendChild(link);
+
+    apiFlow.appendChild(providerInstruction);
+
+    const keyList = document.createElement('div');
+    keyList.className = 'key-list';
+    apiFlow.appendChild(keyList);
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'ghost key-add';
+    addBtn.textContent = 'Add key';
+    addBtn.addEventListener('click', () => {
+      const prefix = provider === LLMProvider.GROQ ? 'groq' : 'gemini';
+      keyState[provider].keys.push({ id: createKeyId(prefix, `${Date.now()}-${Math.random().toString(16).slice(2)}`), value: '', label: '' });
+      if (!keyState[provider].activeKeyId) {
+        keyState[provider].activeKeyId = keyState[provider].keys[0]?.id || '';
+      }
+      renderKeyList(provider, keyList);
+    });
+    apiFlow.appendChild(addBtn);
+
+    renderKeyList(provider, keyList);
+    panel.appendChild(apiFlow);
+    providerPanels[provider] = panel;
+    return panel;
+  };
+
+  const panelsHost = document.createElement('div');
+  panelsHost.className = 'provider-panels';
+  panelsHost.appendChild(buildProviderPanel({
+    provider: LLMProvider.GEMINI,
+    title: 'Gemini',
+    helper: 'Use Google Gemini with the Generative Language API.',
+    steps: [
+      'Open the Google AI Studio API Keys page.',
+      'Create or copy an existing API key for your project.',
+      'Paste the key below to enable Gemini.',
+    ],
+    linkHref: 'https://aistudio.google.com/app/apikey',
+    linkLabel: 'Open Google AI Studio',
+  }));
+  panelsHost.appendChild(buildProviderPanel({
+    provider: LLMProvider.GROQ,
+    title: 'Groq',
+    helper: 'Use Groq (OpenAI-compatible).',
+    steps: [
+      'Sign in to the Groq console and open the API Keys page.',
+      'Create a new key or reuse an existing one for your project.',
+      'Keys are OpenAI-compatible; paste it below to enable Groq.',
+    ],
+    linkHref: 'https://console.groq.com/keys',
+    linkLabel: 'Open Groq console',
+  }));
+
+  apiSection.appendChild(panelsHost);
+  updateProviderChoiceState();
   form.appendChild(apiSection);
 
   body.appendChild(form);
@@ -4726,30 +5123,45 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
     errorEl.style.display = 'none';
     errorEl.textContent = '';
 
-    const provider = LLMProvider.GROQ;
+    const provider = selectedProvider === LLMProvider.ALL
+      ? LLMProvider.ALL
+      : (selectedProvider === LLMProvider.GROQ ? LLMProvider.GROQ : LLMProvider.GEMINI);
     const model = coerceModelForProvider(
       provider,
-      normalizeLlmModel(cachedLlmModel || DEFAULT_LLM_MODELS[LLMProvider.GROQ] || '', provider),
+      normalizeLlmModel(cachedLlmModel || DEFAULT_LLM_MODELS[provider] || '', provider),
     );
-    const groqKey = groqKeyField.input.value.trim();
     const selectedThemeValue = selectedTheme || (themeInputs.find((input) => input.checked)?.value) || ThemePreference.SYSTEM;
     const pitchingCompany = pitchingInput.value.trim();
 
     try {
+      const sanitizeKeys = (providerId, state) => {
+        const prefix = providerId === LLMProvider.GROQ ? 'groq' : 'gemini';
+        const cleaned = (state?.keys || []).map((entry) => ({
+          id: entry?.id,
+          value: typeof entry?.value === 'string' ? entry.value.trim() : '',
+          label: typeof entry?.label === 'string' ? entry.label.trim() : '',
+        }));
+        const normalized = normalizeKeyList(cleaned, '', prefix);
+        const activeKeyId = resolveActiveKeyId(normalized, state?.activeKeyId);
+        return { keys: normalized, activeKeyId };
+      };
+
+      const geminiResult = sanitizeKeys(LLMProvider.GEMINI, keyState[LLMProvider.GEMINI]);
+      const groqResult = sanitizeKeys(LLMProvider.GROQ, keyState[LLMProvider.GROQ]);
       const payload = {
         [LLM_PROVIDER_STORAGE_KEY]: provider,
         [LLM_MODEL_STORAGE_KEY]: model,
+        [GEMINI_KEYS_STORAGE_KEY]: geminiResult.keys,
+        [GROQ_KEYS_STORAGE_KEY]: groqResult.keys,
+        [GEMINI_ACTIVE_KEY_STORAGE_KEY]: geminiResult.activeKeyId,
+        [GROQ_ACTIVE_KEY_STORAGE_KEY]: groqResult.activeKeyId,
       };
-      const keysToRemove = ['geminiKey'];
-      if (groqKey) {
-        payload[GROQ_KEY_STORAGE_KEY] = groqKey;
-      } else {
-        keysToRemove.push(GROQ_KEY_STORAGE_KEY);
-      }
+      const keysToRemove = [GEMINI_KEY_STORAGE_KEY, GROQ_KEY_STORAGE_KEY];
       await chrome.storage.local.set(payload);
       if (keysToRemove.length) {
         await chrome.storage.local.remove(keysToRemove);
       }
+      await loadLlmSettingsFromStorage();
       if (pitchingCompany) {
         await chrome.storage.local.set({ [PITCH_FROM_COMPANY_KEY]: pitchingCompany });
         cachedPitchingCompany = pitchingCompany;
@@ -4757,12 +5169,19 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
         await chrome.storage.local.remove(PITCH_FROM_COMPANY_KEY);
         cachedPitchingCompany = '';
       }
-      cachedGeminiKey = '';
-      cachedGroqKey = groqKey;
+      cachedGeminiKeys = geminiResult.keys;
+      cachedGroqKeys = groqResult.keys;
+      cachedGeminiActiveKeyId = geminiResult.activeKeyId;
+      cachedGroqActiveKeyId = groqResult.activeKeyId;
       cachedLlmProvider = provider;
       cachedLlmModel = model;
       await saveThemePreference(selectedThemeValue);
-      if (apiKeyInput) apiKeyInput.value = groqKey;
+      if (apiKeyInput) {
+        const activeKeyValue = provider === LLMProvider.GROQ
+          ? resolveActiveKeyValue(groqResult.keys, groqResult.activeKeyId)
+          : resolveActiveKeyValue(geminiResult.keys, geminiResult.activeKeyId);
+        apiKeyInput.value = activeKeyValue;
+      }
       if (status) {
         status.innerText = 'Settings saved.';
         status.style.color = '';
@@ -4770,7 +5189,16 @@ function renderSettingsModal({ body, footer, close }, options = {}) {
       close();
       if (typeof options.onSave === 'function') {
         try {
-          options.onSave({ provider, model, groqKey, theme: selectedThemeValue, pitchingCompany });
+          options.onSave({
+            provider,
+            model,
+            geminiKeys: geminiResult.keys,
+            groqKeys: groqResult.keys,
+            geminiActiveKeyId: geminiResult.activeKeyId,
+            groqActiveKeyId: groqResult.activeKeyId,
+            theme: selectedThemeValue,
+            pitchingCompany,
+          });
         } catch (err) {
           console.warn('onSave handler failed', err);
         }
@@ -6182,34 +6610,55 @@ function formatEmailDraftText(draft = {}) {
   return [subject, body].filter(Boolean).join('\n\n');
 }
 
+function stripControlChars(text = '') {
+  if (typeof text !== 'string') return '';
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/\uFFFD/g, '');
+}
+
+function cleanDisplayText(text = '') {
+  return stripControlChars(typeof text === 'string' ? text : '').trim();
+}
+
 function formatTelephonicPitchText(pitch = {}) {
   if (!pitch || typeof pitch !== 'object') return '';
   const sections = [];
-  const callGoal = typeof pitch.callGoal === 'string' ? pitch.callGoal.trim() : (typeof pitch.call_goal === 'string' ? pitch.call_goal.trim() : '');
+  const callGoal = cleanDisplayText(
+    typeof pitch.callGoal === 'string' ? pitch.callGoal : (typeof pitch.call_goal === 'string' ? pitch.call_goal : '')
+  );
   if (callGoal) sections.push(`Call Goal: ${callGoal}`);
-  const opener = typeof pitch.opener === 'string' ? pitch.opener.trim() : '';
+  const opener = cleanDisplayText(typeof pitch.opener === 'string' ? pitch.opener : '');
   if (opener) sections.push(`Opener: ${opener}`);
-  const discovery = typeof pitch.discoveryQuestion === 'string'
-    ? pitch.discoveryQuestion.trim()
-    : (typeof pitch.discovery_question === 'string' ? pitch.discovery_question.trim() : '');
+  const discovery = cleanDisplayText(
+    typeof pitch.discoveryQuestion === 'string'
+      ? pitch.discoveryQuestion
+      : (typeof pitch.discovery_question === 'string' ? pitch.discovery_question : '')
+  );
   if (discovery) sections.push(`Discovery: ${discovery}`);
-  const valueStatement = typeof pitch.valueStatement === 'string'
-    ? pitch.valueStatement.trim()
-    : (typeof pitch.value_statement === 'string' ? pitch.value_statement.trim() : '');
+  const valueStatement = cleanDisplayText(
+    typeof pitch.valueStatement === 'string'
+      ? pitch.valueStatement
+      : (typeof pitch.value_statement === 'string' ? pitch.value_statement : '')
+  );
   if (valueStatement) sections.push(`Value Statement: ${valueStatement}`);
-  const proof = typeof pitch.proofPoint === 'string'
-    ? pitch.proofPoint.trim()
-    : (typeof pitch.proof_point === 'string' ? pitch.proof_point.trim() : '');
+  const proof = cleanDisplayText(
+    typeof pitch.proofPoint === 'string'
+      ? pitch.proofPoint
+      : (typeof pitch.proof_point === 'string' ? pitch.proof_point : '')
+  );
   if (proof) sections.push(`Proof Point: ${proof}`);
-  const cta = typeof pitch.cta === 'string'
-    ? pitch.cta.trim()
-    : (typeof pitch.closingPrompt === 'string'
-      ? pitch.closingPrompt.trim()
-      : (typeof pitch.closing_prompt === 'string' ? pitch.closing_prompt.trim() : ''));
+  const cta = cleanDisplayText(
+    typeof pitch.cta === 'string'
+      ? pitch.cta
+      : (typeof pitch.closingPrompt === 'string'
+        ? pitch.closingPrompt
+        : (typeof pitch.closing_prompt === 'string' ? pitch.closing_prompt : ''))
+  );
   if (cta) sections.push(`CTA: ${cta}`);
-  const script = typeof pitch.script === 'string'
-    ? pitch.script.trim()
-    : (typeof pitch.full_pitch === 'string' ? pitch.full_pitch.trim() : '');
+  const script = cleanDisplayText(
+    typeof pitch.script === 'string'
+      ? pitch.script
+      : (typeof pitch.full_pitch === 'string' ? pitch.full_pitch : '')
+  );
   if (script) {
     if (sections.length) sections.push('');
     sections.push(script);
